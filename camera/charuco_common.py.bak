@@ -1,0 +1,229 @@
+import sys
+import cv2
+import numpy as np
+
+# ============================================================
+# CHARUCO BOARD CONFIGURATION
+# ============================================================
+
+DICTIONARY = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_5X5_250)
+
+# Physical board size, measured on the real strip: 144.78 cm x ~17.5 cm
+# (1447.8 mm x 175 mm).  The BOARD definition below describes the printed
+# ChArUco pattern (4 x 35 squares at 44 mm each), not the strip's outer size.
+PHYSICAL_BOARD_MM = (1447.8, 175.0)   # (length, width) in mm
+
+BOARD = cv2.aruco.CharucoBoard(
+    (4, 35),   # squaresX, squaresY
+    44.0,      # squareLength (mm)
+    33.0,      # markerLength (mm)
+    DICTIONARY
+)
+
+# Set to True if the board was printed using OpenCV < 4.6
+BOARD.setLegacyPattern(False)
+
+DETECTOR = cv2.aruco.CharucoDetector(BOARD)
+
+
+# ============================================================
+# STABILIZED AUTO-CAPTURE
+# ============================================================
+
+class StabilizedGrabber:
+    """Stillness gate + subpixel averaging for auto-captured calibration frames.
+
+    Feed a per-frame dict of detected points (hashable key -> (x, y)) and this
+    returns an averaged capture only when the board has been *still* for ``settle``
+    consecutive frames AND the pose changed since the last capture.  Averaging cancels
+    per-corner subpixel detection jitter; the stillness gate rejects motion-blurred
+    frames and, in stereo, frames where the two unsynchronized cameras caught the
+    board at different positions.
+    """
+
+    def __init__(self, settle=6, motion_px=1.5, max_run=16, overlap=0.8, new_pose_px=None):
+        self.settle = settle
+        self.motion_px = motion_px
+        self.max_run = max_run
+        self.overlap = overlap
+        # A *new* pose must be displaced from the last captured one by more than
+        # this (px).  Comparing corner POSITIONS -- not just the set of visible
+        # tag ids -- is what lets a board be tilted in place and still register
+        # as a new pose.  Without it, calibration only ever sees translations of
+        # the board in its own plane, which leaves the focal length unconstrained.
+        self.new_pose_px = motion_px * 4 if new_pose_px is None else new_pose_px
+        self._sig = None
+        self._prev = None
+        self._run = []
+        self._await = False
+        self._done = None
+
+    def reset(self):
+        self._sig = self._prev = self._done = None
+        self._run = []
+        self._await = False
+
+    @property
+    def state(self):
+        """'idle' (no pose yet), 'settling' (accumulating still frames), or 'await'
+        (this pose already captured, waiting for a new one)."""
+        if self._await:
+            return "await"
+        if self._sig is not None:
+            return "settling"
+        return "idle"
+
+    @property
+    def stable(self):
+        return len(self._run)
+
+    def update(self, det):
+        """Feed one detection dict. Returns an averaged {key: (x, y)} on capture."""
+        sig = tuple(sorted(det))
+        if not sig:
+            return None
+
+        if self._await:
+            if (self._sig is None
+                    or not self._same_pose(sig, self._sig)
+                    or self._moved(self._done, det, self.new_pose_px)):
+                self._reset(sig, det)
+            return None
+
+        if self._sig is None:
+            self._reset(sig, det)
+            return None
+
+        same_pose = self._same_pose(sig, self._sig)
+        moved = 0.0
+        if same_pose and self._prev is not None:
+            common = set(det) & set(self._prev)
+            if len(common) >= 4:
+                moved = float(np.median([
+                    np.hypot(det[k][0] - self._prev[k][0], det[k][1] - self._prev[k][1])
+                    for k in common
+                ]))
+
+        if not same_pose or moved > self.motion_px:
+            self._reset(sig, det)
+            return None
+
+        self._run.append(det)
+        if len(self._run) > self.max_run:
+            self._run.pop(0)
+        self._prev = det
+
+        if len(self._run) >= self.settle:
+            avg = self._average()
+            self._done = avg
+            self._await = True
+            return avg
+        return None
+
+    def _same_pose(self, a, b):
+        """True if the two id-sets are mostly the same pose. Tolerates a corner
+        flickering in/out of detection between frames."""
+        A, B = set(a), set(b)
+        if not A or not B:
+            return False
+        return len(A & B) >= min(len(A), len(B)) * self.overlap
+
+    def _moved(self, ref, det, thr):
+        """True if ``det`` is displaced from reference pose ``ref`` by more than
+        ``thr`` px (median over shared points).  Too little overlap between the
+        two also counts as a new pose."""
+        if not ref:
+            return False
+        common = set(det) & set(ref)
+        if len(common) < 4:
+            return True
+        d = float(np.median([
+            np.hypot(det[k][0] - ref[k][0], det[k][1] - ref[k][1])
+            for k in common
+        ]))
+        return d > thr
+
+    def _reset(self, sig, det):
+        self._sig = sig
+        self._prev = det
+        self._run = [det]
+        self._await = False
+
+    def _average(self):
+        """Average every key that was detected in a majority of the run's frames,
+        so a corner flickering out for a frame or two doesn't get dropped."""
+        if not self._run:
+            return None
+        half = max(len(self._run) // 2, 1)
+        counts = {}
+        for frame in self._run:
+            for k in frame:
+                counts[k] = counts.get(k, 0) + 1
+        keep = sorted(k for k, seen in counts.items() if seen >= half)
+        if not keep:
+            return None
+        acc = {}
+        for k in keep:
+            x = y = n = 0.0
+            for frame in self._run:
+                if k in frame:
+                    x += frame[k][0]
+                    y += frame[k][1]
+                    n += 1
+            acc[k] = (x / n, y / n)
+        return acc
+
+
+# ============================================================
+# CAMERA STREAM INITIALIZATION
+# ============================================================
+
+def parse_camera_source(source):
+    try:
+        return int(source)
+    except ValueError:
+        return source
+
+
+def open_camera(source, width=1920, height=1080, fps=30, focus_val=30, exposure_val=None):
+    source = parse_camera_source(source)
+
+    if sys.platform.startswith("linux") and isinstance(source, int):
+        cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
+        # Use MJPEG codec for higher framerates on Logitech C920
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    else:
+        cap = cv2.VideoCapture(source)
+
+    if width:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    if height:
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    if fps:
+        cap.set(cv2.CAP_PROP_FPS, fps)
+
+    # Disable C920 hardware autofocus to prevent calibration drift
+    cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+    if focus_val is not None:
+        cap.set(cv2.CAP_PROP_FOCUS, focus_val)
+
+    # Freeze exposure and white balance too: auto gain/exposure pulsing shifts every
+    # corner's detected position uniformly and looks exactly like board motion.
+    if exposure_val is not None:
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)  # 0.25 = manual on V4L2
+        cap.set(cv2.CAP_PROP_AUTO_WB, 0)
+        cap.set(cv2.CAP_PROP_EXPOSURE, exposure_val)
+
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open camera stream for source: {source}")
+
+    ok, frame = cap.read()
+    if not ok:
+        raise RuntimeError(f"Camera {source} opened, but failed to grab frame.")
+
+    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    actual_fps = cap.get(cv2.CAP_PROP_FPS)
+
+    print(f"Device {source} initialized: {actual_w}x{actual_h} @ {actual_fps:.1f} FPS | Focus: Manual ({focus_val})")
+    return cap, (actual_w, actual_h)

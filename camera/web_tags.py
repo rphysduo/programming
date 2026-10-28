@@ -1,0 +1,391 @@
+"""Live dual-camera browser stream with ChArUco / ArUco tag highlighting.
+
+Run::
+
+    python web_tags.py                       # both cameras, http://<host>:5000/
+    python web_tags.py --cam0 0 --cam1 1 --display-width 960
+
+Open the URL in a browser.  Every ChArUco board marker (and corner) currently
+detected is outlined and labelled on the video, and the side panel shows which
+of the board's marker IDs are seen right now (green) and which are missing
+(dim) for each camera.  Which board is expected is chosen with ``--board``
+(long 4x35 strip by default, or the small 6x8 board).
+
+This module also provides the shared streaming/detection helpers
+(:class:`LiveView`, :class:`CameraWorker`, :func:`annotate_frame`,
+:func:`encode_jpeg`) imported by ``web_calibrate.py``.  Importing it has no
+side effects: cameras and the Flask app are only started in :func:`main`.
+"""
+
+import argparse
+import threading
+import time
+
+import cv2
+import numpy as np
+from flask import Flask, Response, jsonify
+
+from charuco_common import (BOARD, DETECTOR, add_board_argument, board_ids,
+                            get_board, open_camera)
+
+# Marker IDs of the default (long) board; scripts that select another board
+# pass their own list in.  These are the tags the viewer expects to see.
+EXPECTED_IDS = [int(i) for i in np.asarray(BOARD.getIds()).flatten()]
+
+
+# ============================================================
+# DETECTION / RENDERING HELPERS
+# ============================================================
+
+def annotate_frame(frame, charuco_corners, charuco_ids, marker_corners, marker_ids,
+                   markers_only=False, label=""):
+    """Draw detected ArUco markers (and ChArUco corners) onto ``frame`` in place.
+
+    Returns ``(frame, n_markers, n_charuco_corners)``.  The frame border turns
+    green when at least one marker is detected, red otherwise.
+    """
+    n_markers = 0 if marker_ids is None else int(len(marker_ids))
+    n_corners = 0 if charuco_ids is None else int(len(charuco_ids))
+
+    if n_markers:
+        cv2.aruco.drawDetectedMarkers(frame, list(marker_corners), marker_ids)
+    if not markers_only and n_corners:
+        cv2.aruco.drawDetectedCornersCharuco(
+            frame, charuco_corners.reshape(-1, 1, 2), charuco_ids)
+
+    color = (0, 200, 0) if n_markers else (0, 0, 200)
+    h, w = frame.shape[:2]
+    cv2.rectangle(frame, (0, 0), (w - 1, h - 1), color, 6)
+    cv2.putText(frame, f"markers {n_markers}  charuco {n_corners}", (16, 34),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+    if label:
+        cv2.putText(frame, label, (16, h - 16),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    return frame, n_markers, n_corners
+
+
+def encode_jpeg(frame, display_width=None, quality=80):
+    """Downscale (optionally) and JPEG-encode a BGR frame.  Returns bytes or None."""
+    if display_width and frame.shape[1] > display_width:
+        scale = display_width / frame.shape[1]
+        frame = cv2.resize(frame, (display_width, int(round(frame.shape[0] * scale))))
+    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return buf.tobytes() if ok else None
+
+
+# ============================================================
+# STREAMING BUFFER
+# ============================================================
+
+class LiveView:
+    """Thread-safe holder for the newest annotated JPEG of one camera.
+
+    A producer calls :meth:`publish`; any number of Flask MJPEG generators call
+    :meth:`frames` and each receives every new frame exactly once.
+    """
+
+    def __init__(self):
+        self._cond = threading.Condition()
+        self._jpeg = None
+        self._seq = 0
+        self._alive = True
+
+    def publish(self, jpeg):
+        with self._cond:
+            self._jpeg = jpeg
+            self._seq += 1
+            self._cond.notify_all()
+
+    def close(self):
+        """Signal generators to finish once the last frame has been delivered."""
+        with self._cond:
+            self._alive = False
+            self._cond.notify_all()
+
+    def frames(self):
+        last = -1
+        while True:
+            with self._cond:
+                self._cond.wait_for(
+                    lambda: self._seq != last or not self._alive, timeout=1.0)
+                if self._seq != last and self._jpeg is not None:
+                    last, jpeg = self._seq, self._jpeg
+                elif not self._alive:
+                    return
+                else:
+                    continue
+            yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+                   + jpeg + b"\r\n")
+
+
+# ============================================================
+# CAMERA WORKER
+# ============================================================
+
+class CameraWorker(threading.Thread):
+    """Own one camera: grab frames, detect tags, annotate, publish the stream.
+
+    Detection results are exposed via :meth:`snapshot`; the annotated MJPEG
+    stream is fed to ``self.view`` (a :class:`LiveView`).  The capture is opened
+    inside :meth:`run`, so construction never fails and errors are reported in
+    the snapshot/status rather than crashing the server.
+    """
+
+    def __init__(self, source, width=1920, height=1080, fps=30, focus_val=30,
+                 exposure_val=None, display_width=960, markers_only=False, label="",
+                 detector=None):
+        super().__init__(daemon=True, name=f"cam-{source}")
+        self.source = source
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.focus_val = focus_val
+        self.exposure_val = exposure_val
+        self.display_width = display_width
+        self.markers_only = markers_only
+        self.label = label or str(source)
+        self.detector = detector if detector is not None else DETECTOR
+        self.view = LiveView()
+        self.image_size = None
+
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._corners = None
+        self._ids = None
+        self._marker_ids = []
+        self._charuco_ids = []
+        self._error = None
+
+    def run(self):
+        try:
+            cap, self.image_size = open_camera(
+                self.source, self.width, self.height, self.fps,
+                focus_val=self.focus_val, exposure_val=self.exposure_val)
+        except Exception as exc:  # noqa: BLE001 - report instead of crashing
+            with self._lock:
+                self._error = str(exc)
+            self.view.close()
+            return
+
+        try:
+            while not self._stop.is_set():
+                ok, frame = cap.read()
+                if not ok:
+                    time.sleep(0.02)
+                    continue
+
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                corners, ids, marker_corners, marker_ids = self.detector.detectBoard(gray)
+
+                disp = frame.copy()
+                annotate_frame(disp, corners, ids, marker_corners, marker_ids,
+                               markers_only=self.markers_only, label=self.label)
+                jpeg = encode_jpeg(disp, self.display_width)
+                if jpeg is not None:
+                    self.view.publish(jpeg)
+
+                with self._lock:
+                    self._corners = corners
+                    self._ids = ids
+                    self._marker_ids = ([] if marker_ids is None
+                                        else [int(i) for i in marker_ids.flatten()])
+                    self._charuco_ids = ([] if ids is None
+                                         else [int(i) for i in ids.flatten()])
+        finally:
+            cap.release()
+            self.view.close()
+
+    def stop(self):
+        self._stop.set()
+
+    def snapshot(self):
+        with self._lock:
+            return {
+                "markers": list(self._marker_ids),
+                "charuco": list(self._charuco_ids),
+                "corners": self._corners,
+                "ids": self._ids,
+                "image_size": self.image_size,
+                "error": self._error,
+            }
+
+
+# ============================================================
+# FLASK APP
+# ============================================================
+
+INDEX_TEMPLATE = """<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Camera Tag Viewer</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#121212; color:#eee; font-family: system-ui, sans-serif;
+         margin:0; padding:16px; }
+  h1 { font-size:1.2rem; margin:0 0 12px; font-weight:600; }
+  .streams { display:flex; gap:20px; flex-wrap:wrap; }
+  .cam { flex:1 1 480px; background:#1b1b1b; border:1px solid #2c2c2c;
+         border-radius:10px; padding:12px; }
+  .cam h2 { font-size:0.95rem; margin:0 0 8px; font-weight:600; color:#9ad; }
+  .cam img { width:100%; height:auto; display:block; border-radius:6px;
+             background:#000; }
+  .stat { margin-top:10px; }
+  .meta { color:#aaa; font-size:0.8rem; margin:4px 0; }
+  .err  { color:#ff6b6b; font-size:0.8rem; margin:4px 0; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(34px,1fr));
+          gap:4px; margin-top:6px; }
+  .chip { text-align:center; font-size:0.72rem; padding:3px 0; border-radius:4px;
+          font-variant-numeric:tabular-nums; }
+  .chip.on  { background:#1e5b2a; color:#b7ffbf; border:1px solid #2e8b41; }
+  .chip.off { background:#2a2a2a; color:#666; border:1px solid #333; }
+</style>
+</head>
+<body>
+  <h1>Camera Tag Viewer &mdash; __BOARD__ &mdash; green = detected, dim = not detected</h1>
+  <div class="streams">
+__PANELS__
+  </div>
+<script>
+async function tick() {
+  try {
+    const r = await fetch('/status', {cache:'no-store'});
+    const s = await r.json();
+    const exp = s.expected;
+    for (const key in s) {
+      if (key === 'expected') continue;
+      const c = s[key];
+      const el = document.getElementById('panel-' + key);
+      if (!el) continue;
+      const size = c.image_size ? (c.image_size[0] + 'x' + c.image_size[1]) : '?';
+      let html = '<div class="meta">' + size + ' &middot; markers ' + c.marker_count +
+                 ' &middot; charuco ' + c.charuco_count + '</div>';
+      if (c.error) html += '<div class="err">ERROR: ' + c.error + '</div>';
+      const seen = new Set(c.markers);
+      html += '<div class="grid">';
+      for (const id of exp) {
+        html += '<span class="chip ' + (seen.has(id) ? 'on' : 'off') + '">' + id + '</span>';
+      }
+      html += '</div>';
+      html += '<div class="meta">seen ' + c.markers.length + ' / ' + exp.length + '</div>';
+      el.innerHTML = html;
+    }
+  } catch (e) { /* keep polling */ }
+}
+setInterval(tick, 500);
+tick();
+</script>
+</body>
+</html>
+"""
+
+
+def build_index_html(panels, board_label=""):
+    return (INDEX_TEMPLATE.replace("__PANELS__", "\n".join(panels))
+            .replace("__BOARD__", board_label))
+
+
+def create_app(workers, expected_ids=None, board_label=""):
+    """Build the Flask app for ``{key: CameraWorker}``.
+
+    ``expected_ids`` are the marker IDs the side panel tracks (default: the
+    long board's); ``board_label`` names the board in the page header.
+    """
+    if expected_ids is None:
+        expected_ids = EXPECTED_IDS
+    app = Flask(__name__)
+
+    @app.route("/")
+    def index():
+        panels = []
+        for key, w in workers.items():
+            panels.append(
+                f'<div class="cam">'
+                f'<h2>{w.label}</h2>'
+                f'<img src="/video/{key}">'
+                f'<div class="stat" id="panel-{key}">waiting for frames...</div>'
+                f'</div>')
+        return build_index_html("\n".join(panels), board_label)
+
+    @app.route("/video/<key>")
+    def video(key):
+        w = workers.get(key)
+        if w is None:
+            return ("unknown camera", 404)
+        return Response(w.view.frames(),
+                        mimetype="multipart/x-mixed-replace; boundary=frame")
+
+    @app.route("/status")
+    def status():
+        out = {"expected": expected_ids}
+        for key, w in workers.items():
+            snap = w.snapshot()
+            seen = sorted(set(snap["markers"]))
+            out[key] = {
+                "label": w.label,
+                "image_size": snap["image_size"],
+                "markers": seen,
+                "marker_count": len(snap["markers"]),
+                "charuco_count": len(snap["charuco"]),
+                "missing": [i for i in expected_ids if i not in seen],
+                "error": snap["error"],
+            }
+        return jsonify(out)
+
+    return app
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
+def build_arg_parser():
+    p = argparse.ArgumentParser(
+        description="Dual-camera browser stream with ChArUco/ArUco tag highlighting.",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--cam0", default="0", help="First camera index or stream URL")
+    p.add_argument("--cam1", default="1", help="Second camera index or stream URL")
+    p.add_argument("--width", type=int, default=1920, help="Capture width")
+    p.add_argument("--height", type=int, default=1080, help="Capture height")
+    p.add_argument("--fps", type=int, default=30, help="Capture frame rate")
+    p.add_argument("--focus", type=int, default=30, help="Manual focus value (0-255)")
+    p.add_argument("--exposure", type=int, default=None,
+                   help="Freeze manual exposure (disables auto-exposure/WB)")
+    p.add_argument("--display-width", type=int, default=960,
+                   help="Downscale the streamed frames to this width (0 = full size)")
+    p.add_argument("--markers-only", action="store_true",
+                   help="Draw only ArUco marker outlines (skip ChArUco corner overlay)")
+    p.add_argument("--host", default="0.0.0.0", help="Bind address")
+    p.add_argument("--port", type=int, default=5000, help="HTTP port")
+    add_board_argument(p)
+    return p
+
+
+def main():
+    args = build_arg_parser().parse_args()
+
+    spec = get_board(args.board)
+    expected_ids = board_ids(spec.board)
+
+    workers = {}
+    for key, source in (("cam0", args.cam0), ("cam1", args.cam1)):
+        workers[key] = CameraWorker(
+            source, width=args.width, height=args.height, fps=args.fps,
+            focus_val=args.focus, exposure_val=args.exposure,
+            display_width=args.display_width, markers_only=args.markers_only,
+            label=f"{key} ({source})", detector=spec.detector)
+    for w in workers.values():
+        w.start()
+
+    app = create_app(workers, expected_ids=expected_ids, board_label=spec.label)
+    print(f"\nCamera Tag Viewer running ({spec.label}). Open "
+          f"http://{args.host}:{args.port}/ in a browser (Ctrl+C to stop).")
+    try:
+        app.run(host=args.host, port=args.port, threaded=True)
+    finally:
+        for w in workers.values():
+            w.stop()
+
+
+if __name__ == "__main__":
+    main()

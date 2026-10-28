@@ -1,0 +1,46 @@
+{
+  "_instructions": "Set truth_mm for real measured dimensions.  kind may be 'euclidean', 'horizontal' or 'vertical'.  Height tests use the inferred up direction and either the board surface or a named reference point.  Set board_thickness_mm to the board's measured top-surface height above the tank floor.  Optionally set physical_baseline_mm for a comparison only; it never rescales the reconstruction.  Set tank_transform_verified=true only if the board->tank transform in tank_alignment.npz is a measured, verified transform.  floor_reference_points are used only for a least-squares plane-consistency check and the 3-D plot; they do not redefine the height zero (which is the board surface plus board_thickness_mm).  Use identical point and test names across repeated captures so per-test repeatability can be assessed.",
+  "board_thickness_mm": null,
+  "physical_baseline_mm": null,
+  "tank_transform_verified": false,
+  "up_direction": "auto",
+  "floor_reference_points": [],
+  "length_tests": [],
+  "height_tests": [],
+  "position_tests": [],
+  "available_points": [
+    "A",
+    "B"
+  ],
+  "point_name_examples": {
+    "length": {
+      "name": "horizontal_100mm",
+      "p1": "A",
+      "p2": "B",
+      "kind": "horizontal",
+      "truth_mm": 100.0
+    },
+    "vertical_length": {
+      "name": "vertical_40mm",
+      "p1": "C",
+      "p2": "D",
+      "kind": "vertical",
+      "truth_mm": 40.0
+    },
+    "height": {
+      "name": "height_20mm",
+      "point": "C",
+      "reference_point": null,
+      "truth_mm": 20.0
+    },
+    "position": {
+      "name": "known_board_position",
+      "point": "A",
+      "truth_board_mm": [
+        44.0,
+        650.0,
+        0.0
+      ]
+    }
+  }
+}

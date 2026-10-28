@@ -1,0 +1,34 @@
+{
+  "created_iso": "2026-10-26T15:14:29-04:00",
+  "files": {
+    "cam0_intrinsics.npz": {
+      "source_path": "/home/nicholas/programming/camera/cam0_intrinsics.npz",
+      "session_path": "/home/nicholas/programming/camera/validation/calibration/cam0_intrinsics.npz",
+      "sha256": "529adac7fd421b70ee4c4e8abc5b853d1395512ddfa12d6adac3bd79c25e8992",
+      "size_bytes": 914,
+      "copied_iso": "2026-10-26T15:14:29-04:00"
+    },
+    "cam1_intrinsics.npz": {
+      "source_path": "/home/nicholas/programming/camera/cam1_intrinsics.npz",
+      "session_path": "/home/nicholas/programming/camera/validation/calibration/cam1_intrinsics.npz",
+      "sha256": "e4736c561d61e1622a163b5e7912f92fc10468f8e4f3fce5c5d82c78b8e5766b",
+      "size_bytes": 914,
+      "copied_iso": "2026-10-26T15:14:29-04:00"
+    },
+    "stereo_params.npz": {
+      "source_path": "/home/nicholas/programming/camera/stereo_params.npz",
+      "session_path": "/home/nicholas/programming/camera/validation/calibration/stereo_params.npz",
+      "sha256": "3ea4f0642a9fa8dc8863c76dadb45820dfdbea51d6f49a2e4fcd6adc69e393f8",
+      "size_bytes": 2366,
+      "copied_iso": "2026-10-26T15:14:29-04:00"
+    },
+    "tank_alignment.npz": {
+      "source_path": "/home/nicholas/programming/camera/tank_alignment.npz",
+      "session_path": "/home/nicholas/programming/camera/validation/calibration/tank_alignment.npz",
+      "sha256": "4db0ab1f0939cbaac4f7090355974b8515420fcc7c5983b034a291e5a195b285",
+      "size_bytes": 6507,
+      "copied_iso": "2026-10-26T15:14:29-04:00"
+    }
+  },
+  "updated_iso": "2026-10-28T15:11:16-04:00"
+}

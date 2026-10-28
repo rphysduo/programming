@@ -1,0 +1,126 @@
+import argparse
+import os
+import cv2
+import numpy as np
+from charuco_common import BOARD, DETECTOR, open_camera, StabilizedGrabber
+
+SQUARE_MM = 44.0
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Per-corner reprojection diagnostic. A consistent, localized residue "
+                    "on the same board corners across many poses means the board is bowed/"
+                    "wrinkled there; a uniformly high residue means focus/sharpness, not "
+                    "flatness.")
+    parser.add_argument("--camera", default="0", help="Camera ID (0 or 1)")
+    parser.add_argument("--param", default="cam0_intrinsics.npz", help="Intrinsics file")
+    parser.add_argument("--frames", type=int, default=30,
+                        help="Number of distinct still poses to collect")
+    parser.add_argument("--focus", type=int, default=30, help="Manual focus value (0-255)")
+    parser.add_argument("--max-frames", type=int, default=6000,
+                        help="Hard stop after this many frames")
+    parser.add_argument("--settle", type=int, default=6,
+                        help="Consecutive still frames required per pose")
+    parser.add_argument("--motion", type=float, default=1.5,
+                        help="Max corner displacement (px) before it stops counting as 'still'")
+    args = parser.parse_args()
+
+    param = np.load(args.param)
+    K = param["camera_matrix"].astype(np.float64)
+    D = param["dist_coeffs"].astype(np.float64)
+    if K.shape == (3, 1) or K.ndim == 3:
+        K = K.reshape(3, 3)
+    if D.ndim == 3:
+        D = D.reshape(-1)
+
+    board_pts = BOARD.getChessboardCorners().reshape(-1, 3)
+
+    cap, _ = open_camera(args.camera, 1920, 1080, 30, focus_val=args.focus)
+    grabber = StabilizedGrabber(settle=args.settle, motion_px=args.motion)
+
+    print("\n--- Board Flatness Diagnostic ---")
+    print("Move the board to new poses, holding each pose still for a moment.")
+    print(f"Collecting {args.frames} still poses in camera {args.camera}...\n")
+
+    per_id = {}
+    per_frame_rms = []
+    total_frames = 0
+
+    while len(per_frame_rms) < args.frames and total_frames < args.max_frames:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        total_frames += 1
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        corners, ids, _, _ = DETECTOR.detectBoard(gray)
+        if ids is None or len(ids) < 6:
+            continue
+
+        det = {int(i): tuple(float(v) for v in corners[k].reshape(-1))
+               for k, i in enumerate(ids.flatten())}
+        capture = grabber.update(det)
+        if capture is None:
+            continue
+
+        cids = sorted(capture)
+        img_pts = np.array([capture[c] for c in cids], np.float32)
+        obj_pts = board_pts[cids].astype(np.float32)
+
+        ok_pnp, rvec, tvec = cv2.solvePnP(obj_pts, img_pts, K, D, flags=cv2.SOLVEPNP_ITERATIVE)
+        if not ok_pnp:
+            continue
+
+        proj_all, _ = cv2.projectPoints(board_pts, rvec, tvec, K, D)
+        proj_all = proj_all.reshape(-1, 2)
+
+        mags = []
+        for cid, corner in capture.items():
+            res = np.hypot(proj_all[cid][0] - corner[0], proj_all[cid][1] - corner[1])
+            per_id.setdefault(cid, []).append(res)
+            mags.append(res)
+        per_frame_rms.append(float(np.sqrt(np.mean(np.square(mags)))))
+        print(f"Pose {len(per_frame_rms):3d}/{args.frames} | detected {len(cids):3d} "
+              f"corners | pose RSS {per_frame_rms[-1]:.3f}px")
+
+    cap.release()
+
+    if not per_frame_rms:
+        print("No poses collected. Check camera id and that the board is visible.")
+        return
+
+    means = {cid: float(np.mean(v)) for cid, v in per_id.items()}
+    all_means = np.array(list(means.values()))
+    med = float(np.median(all_means))
+    q1, q3 = np.percentile(all_means, [25, 75])
+    worst = sorted(means.items(), key=lambda kv: kv[1], reverse=True)
+
+    print("\n=== Results ===")
+    print(f"Collective reprojection RSS: mean {np.mean(per_frame_rms):.3f}px, "
+          f"max {np.max(per_frame_rms):.3f}px")
+    print(f"Per-corner mean residue: overall median {med:.3f}px, "
+          f"IQR [{q1:.3f}, {q3:.3f}]px")
+    print("\nWorst board corners (id: grid col,row | mean residue | count seen):")
+    for cid, m in worst[:12]:
+        bx, by = board_pts[cid][0], board_pts[cid][1]
+        col, row = int(round(bx / SQUARE_MM)), int(round(by / SQUARE_MM))
+        print(f"  id {cid:3d}  col {col:2d} row {row:2d} | {m:.3f}px | seen {len(per_id[cid])}")
+
+    spread = q3 / max(q1, 1e-6)
+    worst_ratio = worst[0][1] / max(med, 1e-6)
+
+    if all_means.size >= 8 and worst_ratio >= 1.5 and spread >= 2.0:
+        print("\nVERDICT: localized residue on a few corners, reoccurring across all poses ->")
+        print("  suspect a physical bump/wrinkle/bow at the grid location(s) above. Flatten")
+        print("  or replace the board; this error cannot be calibrated away.")
+    elif worst[0][1] >= 0.8:
+        print("\nVERDICT: uniformly high residue (even the 'worst' corners are only slightly")
+        print("  above the median) -> this is focus/sharpness or optimization precision, not")
+        print("  board flatness. Improve lighting, focus, or corner sharpness.")
+    else:
+        print("\nVERDICT: residue is low and uniform -> board is flat and corners are crisp.")
+
+    print("\nRerun this test after any change (re-print, re-mount, focus) to compare.")
+
+if __name__ == "__main__":
+    main()

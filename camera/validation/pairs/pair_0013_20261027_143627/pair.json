@@ -1,0 +1,108 @@
+{
+  "pair_id": "pair_0013_20261027_143627",
+  "created_iso": "2026-10-27T14:36:27-04:00",
+  "timestamp_unix": 1793126187.563452,
+  "cam0": {
+    "file": "cam0.png",
+    "shape": [
+      1080,
+      1920,
+      3
+    ],
+    "read_timestamp_ns": 1793126186953145128,
+    "read_timestamp_iso": "2026-10-27T14:36:26.953-04:00"
+  },
+  "cam1": {
+    "file": "cam1.png",
+    "shape": [
+      1080,
+      1920,
+      3
+    ],
+    "read_timestamp_ns": 1793126186984778014,
+    "read_timestamp_iso": "2026-10-27T14:36:26.984-04:00"
+  },
+  "inter_camera_read_gap_ms": 31.632886,
+  "warning": "C920 cameras are not hardware-synchronized; the reference object must be completely stationary during capture.",
+  "calibration_hashes": {
+    "cam0_intrinsics.npz": "529adac7fd421b70ee4c4e8abc5b853d1395512ddfa12d6adac3bd79c25e8992",
+    "cam1_intrinsics.npz": "e4736c561d61e1622a163b5e7912f92fc10468f8e4f3fce5c5d82c78b8e5766b",
+    "stereo_params.npz": "3ea4f0642a9fa8dc8863c76dadb45820dfdbea51d6f49a2e4fcd6adc69e393f8",
+    "tank_alignment.npz": "4db0ab1f0939cbaac4f7090355974b8515420fcc7c5983b034a291e5a195b285"
+  },
+  "calibration_image_size": [
+    1920,
+    1080
+  ],
+  "calibration_image_sizes": {
+    "cam0": [
+      1920,
+      1080
+    ],
+    "cam1": [
+      1920,
+      1080
+    ]
+  },
+  "calibration_warnings": [
+    {
+      "code": "tank_identity",
+      "message": "T_world_board is the identity default: board coordinates are NOT verified tank coordinates"
+    },
+    {
+      "code": "stereo_scale_provisional",
+      "message": "tank_alignment records stereo_scale='provisional' and marks the world-derived metric scale as provisional.  Do not treat it as final."
+    },
+    {
+      "code": "baseline_disagreement",
+      "message": "stereo baseline and independently fitted world baseline differ; possible metric-scale/geometry error, board movement, or camera movement after calibration"
+    },
+    {
+      "code": "rotation_disagreement",
+      "message": "world/stereo rotations differ by more than 1 degree"
+    },
+    {
+      "code": "translation_disagreement",
+      "message": "world/stereo translations are inconsistent; the two calibrations may not describe the same camera rig"
+    }
+  ],
+  "camera_settings": {
+    "cam0": "0",
+    "cam1": "1",
+    "requested_width": 1920,
+    "requested_height": 1080,
+    "requested_fps": 30,
+    "requested_focus": 30,
+    "requested_exposure": null,
+    "actual_size_cam0": [
+      1920,
+      1080
+    ],
+    "actual_size_cam1": [
+      1920,
+      1080
+    ],
+    "actual_fps_cam0": 30.0,
+    "actual_fps_cam1": 30.0,
+    "actual_focus_cam0": 30.0,
+    "actual_focus_cam1": 30.0,
+    "actual_exposure_cam0": 333.0,
+    "actual_exposure_cam1": 333.0
+  },
+  "capture_settings": {
+    "actual_size_cam0": [
+      1920,
+      1080
+    ],
+    "actual_size_cam1": [
+      1920,
+      1080
+    ],
+    "actual_fps_cam0": 30.0,
+    "actual_fps_cam1": 30.0,
+    "actual_focus_cam0": 30.0,
+    "actual_focus_cam1": 30.0,
+    "actual_exposure_cam0": 333.0,
+    "actual_exposure_cam1": 333.0
+  }
+}

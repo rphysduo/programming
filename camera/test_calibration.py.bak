@@ -1,0 +1,177 @@
+import argparse
+import os
+import time
+import cv2
+import numpy as np
+from charuco_common import BOARD, DETECTOR, open_camera
+
+SQUARE_MM = 44.0
+
+def load_params(param0, param1, stereo):
+    d0, d1 = np.load(param0), np.load(param1)
+    if stereo is None and not os.path.exists("stereo_params.npz"):
+        stereo = "stereo_params.npz"
+    s = np.load(stereo)
+    K0, D0 = d0["camera_matrix"].astype(np.float64), d0["dist_coeffs"].astype(np.float64)
+    K1, D1 = d1["camera_matrix"].astype(np.float64), d1["dist_coeffs"].astype(np.float64)
+    R, T = s["R"].astype(np.float64), s["T"].astype(np.float64)
+    return K0, D0, K1, D1, R, T
+
+def plausible(K, width=1920):
+    if K[0, 0] < width * 0.6 or K[0, 0] > width * 1.6:
+        return (f"implausible fx={K[0,0]:.0f} at {width}px "
+                f"(expect ~{width // 2 / np.tan(np.radians(35)):.0f} for a typical webcam); "
+                f"recalibrate with the board MOVED between captures")
+    return None
+
+def board_centroid():
+    return BOARD.getChessboardCorners().mean(axis=0)
+
+def single_cam_pose(corners, ids, K, D):
+    obj, img = BOARD.matchImagePoints(corners, ids, None, None)
+    if obj is None or len(obj) < 6:
+        return None
+    ok, rvec, tvec = cv2.solvePnP(obj, img, K, D)
+    rmat, _ = cv2.Rodrigues(rvec)
+    center = board_centroid()
+    center_cam = (rmat @ center) + tvec.reshape(3)
+    return float(np.linalg.norm(center_cam)), float(np.linalg.norm(tvec.reshape(3)))
+
+def stereo_triangulate(corners0, ids0, corners1, ids1, K0, D0, K1, D1, R, T):
+    common_ids = np.intersect1d(ids0.flatten(), ids1.flatten())
+    if len(common_ids) < 6:
+        return None
+    pts0, pts1, obj_ids = [], [], []
+    for cid in common_ids:
+        i0 = np.where(ids0.flatten() == cid)[0][0]
+        i1 = np.where(ids1.flatten() == cid)[0][0]
+        pts0.append(corners0[i0])
+        pts1.append(corners1[i1])
+        obj_ids.append(int(cid))
+    pts0 = np.array(pts0, np.float32).reshape(-1, 2)
+    pts1 = np.array(pts1, np.float32).reshape(-1, 2)
+    u0 = cv2.undistortPoints(pts0, K0, D0, P=K0).reshape(-1, 2)
+    u1 = cv2.undistortPoints(pts1, K1, D1, P=K1).reshape(-1, 2)
+    P1 = K0 @ np.hstack([np.eye(3), np.zeros((3, 1))])
+    P2 = K1 @ np.hstack([R, T.reshape(-1, 1)])
+    hom = cv2.triangulatePoints(P1, P2, u0.T, u1.T)
+    X = (hom[:3] / hom[3]).T  # 3D in cam0 frame, mm
+    centroid = X.mean(axis=0)
+    centroid1 = (R @ centroid) + T.reshape(3)  # board center, cam1 frame
+    d_cam0 = float(np.linalg.norm(centroid))
+    d_cam1 = float(np.linalg.norm(centroid1))
+    spacing_err = spacing_error(X, np.array(obj_ids))
+    return {"d0": d_cam0, "d1": d_cam1, "spacing_pct": spacing_err, "n": len(common_ids)}
+
+def spacing_error(X, obj_ids):
+    cols = BOARD.getChessboardSize()[0] - 1  # charuco corners per row
+    idx = {i: k for k, i in enumerate(obj_ids)}
+    diffs = []
+    for i in obj_ids:
+        i2 = i + 1
+        if i % cols != cols - 1 and i2 in idx and (i // cols) == (i2 // cols):
+            d = np.linalg.norm(X[idx[i]] - X[idx[i2]])
+            diffs.append(abs(d - SQUARE_MM) / SQUARE_MM * 100.0)
+    return float(np.mean(diffs)) if diffs else float("nan")
+
+def main():
+    parser = argparse.ArgumentParser(description="Live stereo triangulation + pose test vs real world")
+    parser.add_argument("--cam0", default="0", help="First camera ID")
+    parser.add_argument("--cam1", default="1", help="Second camera ID")
+    parser.add_argument("--param0", default="cam0_intrinsics.npz")
+    parser.add_argument("--param1", default="cam1_intrinsics.npz")
+    parser.add_argument("--stereo", default="stereo_params.npz")
+    parser.add_argument("--focus", type=int, default=30)
+    parser.add_argument("--headless", action="store_true",
+                        help="No GUI; print a status line (auto-enabled when DISPLAY is unset)")
+    parser.add_argument("--duration", type=float, default=0.0,
+                        help="Exit after this many seconds in headless mode (0 = run forever)")
+    args = parser.parse_args()
+
+    headless = args.headless or not os.environ.get("DISPLAY")
+
+    K0, D0, K1, D1, R, T = load_params(args.param0, args.param1, args.stereo)
+    baseline = float(np.linalg.norm(T))
+
+    print("\n=== Calibration Test ===")
+    print(f"Cam0 fx={K0[0,0]:.1f} fy={K0[1,1]:.1f} cx={K0[0,2]:.1f} cy={K0[1,2]:.1f}")
+    print(f"Cam1 fx={K1[0,0]:.1f} fy={K1[1,1]:.1f} cx={K1[0,2]:.1f} cy={K1[1,2]:.1f}")
+    print(f"Stereo baseline: {baseline:.1f} mm")
+    for name, K in (("cam0", K0), ("cam1", K1)):
+        warn = plausible(K)
+        if warn:
+            print(f"  WARNING {name}: {warn}")
+    if headless:
+        print("Headless: measuring... (point both cameras at the board)")
+
+    cap0, _ = open_camera(args.cam0, 1920, 1080, 30, focus_val=args.focus)
+    cap1, _ = open_camera(args.cam1, 1920, 1080, 30, focus_val=args.focus)
+
+    fps_frames = 0
+    last_report = 0.0
+    start = time.time()
+    best = None
+
+    while True:
+        ok0, frame0 = cap0.read()
+        ok1, frame1 = cap1.read()
+        if not ok0 or not ok1:
+            break
+
+        gray0 = cv2.cvtColor(frame0, cv2.COLOR_BGR2GRAY)
+        gray1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
+        corners0, ids0, _, _ = DETECTOR.detectBoard(gray0)
+        corners1, ids1, _, _ = DETECTOR.detectBoard(gray1)
+        fps_frames += 1
+
+        if ids0 is not None and ids1 is not None:
+            pose0 = single_cam_pose(corners0, ids0, K0, D0)
+            pose1 = single_cam_pose(corners1, ids1, K1, D1)
+            tri = stereo_triangulate(corners0, ids0, corners1, ids1, K0, D0, K1, D1, R, T)
+            if tri is not None and pose0 and pose1:
+                rms0 = estimate_rms(corners0, ids0, K0, D0)
+                rms1 = estimate_rms(corners1, ids1, K1, D1)
+                now = time.time()
+                if now - last_report >= 0.5:
+                    verdict = "GOOD" if tri["spacing_pct"] <= 3.0 else (
+                        "FAIR" if tri["spacing_pct"] <= 8.0 else "POOR")
+                    print(f"[{fps_frames + 0:4d}] board pts {tri['n']} | "
+                          f"solvePnP dist c0={pose0[0]:7.1f}mm c1={pose1[0]:7.1f}mm | "
+                          f"stereo dist c0={tri['d0']:7.1f}mm c1={tri['d1']:7.1f}mm | "
+                          f"reproj rms {rms0:.2f}/{rms1:.2f}px | "
+                          f"spacing err {tri['spacing_pct']:.2f}% ({verdict})")
+                    last_report = now
+                    if best is None or tri["spacing_pct"] < best["spacing_pct"]:
+                        best = tri
+
+        if headless:
+            if args.duration and time.time() - start >= args.duration:
+                break
+            continue
+
+        disp = np.hstack((cv2.resize(frame0, (960, 540)), cv2.resize(frame1, (960, 540))))
+        cv2.imshow("Calibration Test", disp)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
+
+    cap0.release()
+    cap1.release()
+    if not headless:
+        cv2.destroyAllWindows()
+
+    if best is not None:
+        print(f"\nBest frame: stereo c0={best['d0']:.1f}mm c1={best['d1']:.1f}mm, "
+              f"spacing err {best['spacing_pct']:.2f}%")
+    print("\nCompare against a tape measure: distance from each camera lens to the board center.")
+    print("  spacing err  -> how close camera-derived 44mm square sizes match reality.")
+
+def estimate_rms(corners, ids, K, D):
+    obj, img = BOARD.matchImagePoints(corners, ids, None, None)
+    if obj is None or len(obj) < 6:
+        return float("nan")
+    ok, rvec, tvec = cv2.solvePnP(obj, img, K, D)
+    proj, _ = cv2.projectPoints(obj, rvec, tvec, K, D)
+    return float(np.mean(np.linalg.norm(proj.reshape(-1, 2) - img.reshape(-1, 2), axis=1)))
+
+if __name__ == "__main__":
+    main()

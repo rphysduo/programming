@@ -1,0 +1,103 @@
+# detect_charuco.py
+import argparse
+import os
+import time
+import cv2
+from charuco_common import BOARD, DETECTOR, open_camera
+
+def main():
+    parser = argparse.ArgumentParser(description="Live ChArUco detection test script")
+    parser.add_argument("--camera", default="0", help="Camera index or stream path (e.g., 0, 1)")
+    parser.add_argument("--width", type=int, default=1920, help="Target frame width")
+    parser.add_argument("--height", type=int, default=1080, help="Target frame height")
+    parser.add_argument("--fps", type=int, default=30, help="Target frame rate")
+    parser.add_argument("--focus", type=int, default=30, help="Manual focus value (0-255)")
+    parser.add_argument("--headless", action="store_true",
+                        help="No GUI window; print detection stats (auto-enabled when DISPLAY is unset)")
+    parser.add_argument("--duration", type=float, default=15.0,
+                        help="How long to run in headless mode, in seconds")
+    args = parser.parse_args()
+
+    # Over SSH (no DISPLAY) the bundled Qt can't create windows, so fall back to headless
+    headless = args.headless or not os.environ.get("DISPLAY")
+
+    # Open the stream with manual focus locked
+    cap, image_size = open_camera(
+        source=args.camera,
+        width=args.width,
+        height=args.height,
+        fps=args.fps,
+        focus_val=args.focus
+    )
+
+    print("\n--- Testing ChArUco Detection ---")
+    print(f"Target resolution: {image_size[0]}x{image_size[1]}")
+    if headless:
+        print(f"Headless mode: logging stats for {args.duration:.0f}s. Ctrl+C to stop early.")
+    else:
+        print("Press 'Q' in the window to exit.\n")
+
+    max_markers = 0
+    max_corners = 0
+    total_frames = 0
+    start_time = time.time()
+
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            print("Failed to grab frame from camera.")
+            break
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        # Detect ArUco markers and interpolate ChArUco corners
+        charuco_corners, charuco_ids, marker_corners, marker_ids = DETECTOR.detectBoard(gray)
+
+        marker_count = 0
+        corner_count = 0
+
+        if marker_ids is not None:
+            marker_count = len(marker_ids)
+        if charuco_ids is not None:
+            corner_count = len(charuco_ids)
+
+        max_markers = max(max_markers, marker_count)
+        max_corners = max(max_corners, corner_count)
+        total_frames += 1
+
+        if headless:
+            if marker_count > 0:
+                print(f"markers={marker_count:>2} charuco_corners={corner_count:>2}  "
+                      f"best={max_markers}:{max_corners}  frames={total_frames}")
+            if time.time() - start_time >= args.duration:
+                break
+            continue
+
+        if marker_ids is not None:
+            cv2.aruco.drawDetectedMarkers(frame, list(marker_corners), marker_ids)
+
+        if charuco_ids is not None:
+            cv2.aruco.drawDetectedCornersCharuco(frame, charuco_corners.reshape(-1, 1, 2), charuco_ids)
+
+        cv2.putText(frame, f"ArUco Markers: {marker_count}", (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        cv2.putText(frame, f"ChArUco Corners: {corner_count}", (20, 80),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+        cv2.putText(frame, f"Resolution: {image_size[0]}x{image_size[1]}", (20, 120),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        cv2.imshow(f"ChArUco Test - Camera {args.camera}", frame)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
+            break
+
+    cap.release()
+    if not headless:
+        cv2.destroyAllWindows()
+
+    print(f"\nSummary: {total_frames} frames processed, "
+          f"best detection {max_markers} markers / {max_corners} ChArUco corners.")
+
+if __name__ == "__main__":
+    main()
