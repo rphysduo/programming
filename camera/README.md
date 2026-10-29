@@ -334,11 +334,14 @@ python validate_stereo_3d.py label
 ```
 
 In the capture page, press **Capture Pair** for each stationary pose. The live
-previews show an orange crosshair at the calibrated big-board origin
-`(0,0,0)` plus 50 mm board axes: `+X` red, `+Y` green, `+Z` blue (currently
-downward). This uses the saved board pose in `tank_alignment.npz`, is drawn
-only on the preview stream, and is not written into the saved PNGs. In the
-labelling page, click a point in cam0 then the same point in cam1; use the
+previews show an orange crosshair at a preview origin plus 50 mm board axes:
+`+X` red, `+Y` green, `+Z` blue (currently downward). By default the preview
+origin is shifted `+4` board rows (`+176 mm`) along `+Y`; use
+`--preview-origin-y-rows 0` to show the true pattern origin. This uses the
+saved board pose in `tank_alignment.npz`, is drawn only on the preview stream,
+and is not written into the saved PNGs. Saved board coordinates always use the
+true `(0,0,0)` pattern origin. In the labelling page, click a point in cam0
+then the same point in cam1; use the
 mouse wheel to zoom, right/shift-drag to pan, and the point table to edit or
 delete. **Save** writes raw full-resolution pixel coordinates and also saves
 derived geometry for each point:

@@ -9,8 +9,8 @@ What it does
 ------------
 1. Captures paired, full-resolution C920 frames in a browser (or headless
    ``--auto N``) and stores them under a validation session directory.  The
-   live previews mark the calibrated big-board origin and its +X/+Y/+Z axes;
-   the overlay is not written into the saved frames.
+   live previews mark a preview origin (default: +4 board rows along +Y) and
+   its +X/+Y/+Z axes; the overlay is not written into the saved frames.
 2. Lets you click the same physical reference points in both images in a
    browser, with per-camera zoom, panning and a pixel magnifier.
    Correspondences are saved as raw full-resolution pixel coordinates, with
@@ -809,9 +809,10 @@ def _project_camera_point_px(point: np.ndarray, K: np.ndarray,
 
 def project_board_frame_px(
         cal: Calibration,
-        axis_length_mm: float = 50.0
+        axis_length_mm: float = 50.0,
+        origin_board_mm: np.ndarray | None = None
 ) -> dict[str, dict[str, Any]]:
-    """Project the big-board origin and +X/+Y/+Z axes into each camera.
+    """Project a board-frame origin and its +X/+Y/+Z axes into each camera.
 
     The world calibration stores ``X_cam = R_board_to_cam @ X_board +
     t_board_to_cam``.  Returns raw distorted pixels because the live previews
@@ -820,18 +821,21 @@ def project_board_frame_px(
     length = float(axis_length_mm)
     if not np.isfinite(length) or length <= 0.0:
         length = 50.0
+    board_origin = (np.zeros(3, np.float64) if origin_board_mm is None
+                    else np.asarray(origin_board_mm, np.float64).reshape(3))
     result: dict[str, dict[str, Any]] = {}
     cameras = (
         ("cam0", cal.K0, cal.D0, cal.R_board_to_cam0, cal.t_board_to_cam0),
         ("cam1", cal.K1, cal.D1, cal.R_board_to_cam1, cal.t_board_to_cam1),
     )
     for key, K, D, R, t in cameras:
-        origin = np.asarray(t, np.float64).reshape(3)
+        R = np.asarray(R, np.float64)
+        origin = np.asarray(t, np.float64).reshape(3) + R @ board_origin
         axes: dict[str, list[float] | None] = {}
         for name, axis in (("X", (1.0, 0.0, 0.0)),
                            ("Y", (0.0, 1.0, 0.0)),
                            ("Z", (0.0, 0.0, 1.0))):
-            endpoint = origin + np.asarray(R, np.float64) @ np.asarray(axis) * length
+            endpoint = origin + R @ np.asarray(axis) * length
             axes[name] = _project_camera_point_px(endpoint, K, D)
         result[key] = {
             "origin": _project_camera_point_px(origin, K, D),
@@ -885,16 +889,22 @@ def draw_board_axes(frame: np.ndarray, origin: list[float] | None,
 
         label = "+" + name
         (tw, th), _ = cv2.getTextSize(label, font, scale, thickness)
-        if ex > width * 0.72:
-            tx = ex - tw - 10
-        elif ex < width * 0.28:
-            tx = ex + 10
+        dx, dy = ex - ox, ey - oy
+        distance = math.hypot(dx, dy)
+        label_x, label_y = ex, ey
+        if 0.0 < distance < 55.0:
+            label_x = ox + dx / distance * 55.0
+            label_y = oy + dy / distance * 55.0
+        if label_x > width * 0.72:
+            tx = label_x - tw - 10
+        elif label_x < width * 0.28:
+            tx = label_x + 10
         else:
-            tx = ex - tw / 2
-        if ey < height / 2:
-            ty = ey - 10
+            tx = label_x - tw / 2
+        if label_y < height / 2:
+            ty = label_y - 10
         else:
-            ty = ey + th + 10
+            ty = label_y + th + 10
         tx = int(min(max(tx, 4), width - 4 - tw))
         ty = int(min(max(ty, th + 4), height - 4))
         cv2.putText(frame, label, (tx, ty), font, scale,
@@ -2700,7 +2710,9 @@ class StereoCaptureWorker(threading.Thread):
                                 for name, point in (board.get("axes") or {}).items()
                             }
                             draw_board_axes(preview, origin, axes)
-                            draw_board_origin(preview, origin)
+                            draw_board_origin(
+                                preview, origin,
+                                board.get("label", "board origin (0,0,0)"))
                             draw_board_axes(preview, origin, axes, labels_only=True)
                             jpeg = encode_jpeg(preview)
                         if jpeg is not None:
@@ -2799,13 +2811,13 @@ CAPTURE_WEB_TEMPLATE = r"""<!doctype html>
     may be downscaled; saved PNGs remain full resolution.
   </div>
   <div class="hint">
-    The orange crosshair marks the calibrated big-board origin
-    <b>(0,0,0)</b>, projected with the saved board pose in
-    <code>tank_alignment.npz</code>. The arrows are board <b>+X</b> (red),
-    <b>+Y</b> (green) and <b>+Z</b> (blue), drawn 50&nbsp;mm long;
-    <b>+Z</b> points physically downward. The overlay is preview-only, is not
-    written into captured PNGs, and does not live-track a board that has been
-    moved.
+    The orange crosshair is the live preview origin. It is shifted along board
+    <b>+Y</b> by <code>--preview-origin-y-rows</code> (default <b>+4 rows</b>,
+    +176&nbsp;mm) from the true pattern origin; saved board coordinates still
+    use <b>(0,0,0)</b>. The arrows are board <b>+X</b> (red), <b>+Y</b>
+    (green) and <b>+Z</b> (blue), drawn 50&nbsp;mm long; <b>+Z</b> points
+    physically downward. The overlay is preview-only, is not written into
+    captured PNGs, and does not live-track a board that has been moved.
   </div>
   <div class="panels">
     <div class="cam">
@@ -3035,13 +3047,33 @@ def cmd_capture(args: argparse.Namespace) -> int:
 
     views = {"cam0": LiveView(), "cam1": LiveView()}
     state = CaptureState()
-    board_px = project_board_frame_px(cal)
+    try:
+        square_mm = float(np.asarray(
+            cal.tank.get("square_length_mm", 44.0)).reshape(-1)[0])
+    except (TypeError, ValueError, IndexError):
+        square_mm = 44.0
+    origin_rows = float(args.preview_origin_y_rows)
+    origin_y_mm = origin_rows * square_mm
+    origin_board_mm = np.array([0.0, origin_y_mm, 0.0], np.float64)
+    board_px = project_board_frame_px(
+        cal, origin_board_mm=origin_board_mm)
+    if abs(origin_rows) < 1e-9:
+        origin_label = "board origin (0,0,0)"
+    else:
+        origin_label = f"origin (0,{origin_y_mm:+.0f},0) mm"
+    for item in board_px.values():
+        item["label"] = origin_label
     for key, item in board_px.items():
         origin = item.get("origin")
         if origin is None:
-            print(f"Board origin {key}: not visible / behind camera")
+            print(f"Board preview origin {key}: not visible / behind camera")
         else:
-            print(f"Board origin {key}: ({origin[0]:.1f}, {origin[1]:.1f}) px")
+            print(f"Board preview origin {key}: "
+                  f"({origin[0]:.1f}, {origin[1]:.1f}) px")
+    if abs(origin_rows) >= 1e-9:
+        print(f"Preview origin shifted {origin_rows:+g} board rows "
+              f"({origin_y_mm:+g} mm) along +Y; saved board coordinates "
+              "still use the true pattern origin.")
     worker = StereoCaptureWorker(args, state, views, session, meta_base,
                                  board_px)
     worker.start()
@@ -6485,6 +6517,10 @@ def build_parser() -> argparse.ArgumentParser:
     cap.add_argument("--display-width", type=int, default=900,
                      help="Browser preview width per camera (saved frames stay "
                           "full size)")
+    cap.add_argument("--preview-origin-y-rows", type=float, default=4.0,
+                     help="Shift the live-preview origin along board +Y by "
+                          "this many square rows (preview only; saved "
+                          "coordinates still use the true pattern origin)")
     cap.add_argument("--auto", type=int, default=0,
                      help="Headless: capture this many pairs without a web UI")
     cap.add_argument("--interval", type=float, default=1.0,
