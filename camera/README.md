@@ -109,6 +109,7 @@ python calibrate_individual.py --board small --camera 1 \
 | `calibrate_studio.py` | Stage 2 — **stereo extrinsics** from pairs seen by both cameras. Writes `stereo_params.npz`. |
 | `calibrate_world.py` | Stage 2b / 4 — **camera-to-tank alignment** from the long floor board. Also holds the shared `solve_camera_world` / `pack_world_params` helpers used by `web_calibrate.py`'s `world` mode. Writes `tank_alignment.npz`; `--save-images` writes the accepted annotated frames. |
 | `test_calibration.py` | Stage 3 — live **validation**: triangulates the board and checks real-world spacing / distances. |
+| `charuco_geometry_diagnostic.py` | Automatic dry-board geometry diagnostic: compares known corner coordinates, independent camera-ray/board-plane intersections, unconstrained stereo reconstruction, and world-implied versus saved stereo `R,T`. Runs on saved image pairs without camera hardware. |
 | `validate_stereo_3d.py` | Dry 3-D **metrology validation**: browser-based full-resolution stereo capture and correspondence labelling, then triangulation against measured truth. Never edits the calibration files. |
 | `check_flatness.py` | Diagnostic — per-corner reprojection residue, to catch a **bowed/wrinkled/printed-bad board**. |
 | `web_tags.py` | Live dual-camera browser stream with ChArUco/ArUco highlighting. Also hosts shared stream helpers (`LiveView`, `CameraWorker`, `annotate_frame`, `encode_jpeg`). |
@@ -129,6 +130,7 @@ charuco_common.py  ──►  calibrate_individual.py ─┐
        ├── detect_charuco.py
        ├── check_flatness.py
        ├── test_calibration.py
+       ├── charuco_geometry_diagnostic.py
        └── web_tags.py ──────► web_calibrate.py
 ```
 
@@ -263,16 +265,12 @@ The three things you need, the board each one uses, and the command:
 # 0. Sanity: does detection work at all?
 python detect_charuco.py --camera 0
 
-# 1. Intrinsics, once per camera (headless auto-capture; hold each pose still)
-python calibrate_individual.py --camera 0 --output cam0_intrinsics.npz --samples 20
-python calibrate_individual.py --camera 1 --output cam1_intrinsics.npz --samples 20
+# 1. Intrinsics, once per camera, using the SMALL board
+python calibrate_individual.py --board small --camera 0 --output cam0_intrinsics.npz --samples 20
+python calibrate_individual.py --board small --camera 1 --output cam1_intrinsics.npz --samples 20
 
-# 1b. Additional intrinsics with the small 6x8 board (better-conditioned K/D)
-python calibrate_individual.py --board small --camera 0 --output cam0_intrinsics_small.npz
-python calibrate_individual.py --board small --camera 1 --output cam1_intrinsics_small.npz
-
-# 2. Stereo extrinsics (both cameras see the board)
-python calibrate_studio.py --cam0 0 --cam1 1 --samples 15
+# 2. Stereo extrinsics (both cameras see the SMALL board)
+python calibrate_studio.py --board small --cam0 0 --cam1 1 --samples 15
 
 # 2b/4a. Big-board detection evidence, once per camera (long 4x35 board)
 python detect_charuco.py --board long --camera 0 --save-annotated tank_cam0.png
@@ -284,12 +282,51 @@ python calibrate_world.py --board long --cam0 0 --cam1 1 --save-images
 # 3. Validate against a tape measure
 python test_calibration.py --cam0 0 --cam1 1
 
+# 4. Diagnose all three geometric estimates on a saved LONG-board pair
+python charuco_geometry_diagnostic.py --board long \
+  --pair-dir validation/pairs/pair_0018_20261029_142637 \
+  --output-dir ../outputs/charuco_geometry_diagnostic
+
 # Optional: is the printed board actually flat?
 python check_flatness.py --camera 0 --param cam0_intrinsics.npz
 ```
 
 > Only one process can hold a V4L2 camera at a time — never run two scripts
 > (or a script + the browser tools) against the same device simultaneously.
+
+### Automatic board-geometry diagnostic
+
+`charuco_geometry_diagnostic.py` treats every reliably detected long-board
+corner as a known 3-D reference point. For 10–20 spatially distributed corner
+IDs it reports three estimates without conflating them:
+
+1. the exact coordinate from `CharucoBoard.getChessboardCorners()`;
+2. each camera ray independently intersected with the known board plane
+   `Z=0`; and
+3. unconstrained stereo triangulation transformed into board coordinates.
+
+Homography RANSAC must accept a corner in both images before it is analyzed.
+This rejects isolated glare/reflection detections and interpolation outliers;
+ambiguous duplicate IDs, which can indicate a reflected copy, are excluded.
+The stereo result is **not** projected back onto `Z=0`, because its reconstructed
+height error is one of the measurements the diagnostic is intended to expose.
+
+The report also derives camera-0-to-camera-1 `R,T` from the two independently
+saved board poses and compares the full transform with `stereo_params.npz`.
+Its compact diagnosis has three possible values:
+
+- `geometry_consistent`: all three estimates and the relative transforms agree;
+- `stereo_geometry_mismatch`: individual plane intersections agree with the
+  board but free stereo reconstruction or stereo `R,T` does not; or
+- `camera_pose_intrinsics_detection_or_board_mismatch`: at least one
+  independent camera-to-board projection is already inaccurate.
+
+JSON and CSV output are written only when `--output-dir` is supplied. The
+default 5 mm / 1 degree classification limits are explicit diagnostic
+demonstration values, not experimentally calibrated accuracy claims.
+When `pair.json` is present, the report also compares its recorded calibration
+hashes with the files used for analysis and warns if a newer or different
+calibration generation is being applied.
 
 ### Browser tools
 
