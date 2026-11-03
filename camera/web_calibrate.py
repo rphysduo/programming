@@ -10,9 +10,9 @@ files as the CLI scripts.
 
 Run::
 
-    python web_calibrate.py --mode individual --board small --camera 0 --output cam0_intrinsics.npz
-    python web_calibrate.py --mode stereo --board small --cam0 0 --cam1 1
-    python web_calibrate.py --mode world --board long --cam0 0 --cam1 1
+    python web_calibrate.py --mode individual --board small --camera 0 --allow-full-frame --output ../outputs/candidates/cam0.npz
+    python web_calibrate.py --mode stereo --board small --allow-full-frame --output ../outputs/candidates/stereo.npz
+    python web_calibrate.py --mode world --board long --roi-file direct_board_roi.json --world-output ../outputs/candidates/tank.npz
 
 ``individual`` recovers one camera's intrinsics, ``stereo`` the transform
 between the two cameras, and ``world`` each camera's pose relative to the
@@ -38,6 +38,9 @@ from calibrate_world import (MIN_WORLD_CORNERS, board_to_world,
                              combine_camera_world, pack_world_params,
                              solve_camera_world)
 from web_tags import LiveView, annotate_frame, encode_jpeg
+from calibration_capture import (add_capture_arguments, load_capture_rois, CaptureDetector,
+                                 require_image_size, new_candidate_path, save_candidate_npz,
+                                 world_samples_ready)
 
 
 # ============================================================
@@ -59,7 +62,7 @@ class CalibState:
         self.result = []
         self.error = None
         self.cams = {k: {"markers": [], "charuco": 0, "valid": False,
-                         "image_size": None, "error": None} for k in keys}
+                         "image_size": None, "error": None, "captured": 0} for k in keys}
 
     def note(self, text):
         with self.lock:
@@ -93,6 +96,13 @@ class CalibrationRunner(threading.Thread):
         self.finish_event = threading.Event()
         self.stop_event = threading.Event()
         self._sizes = {}
+        self._expected_sizes = {}
+        keys = ("camera",) if self.mode == "individual" else ("cam0", "cam1")
+        rois = load_capture_rois(args, keys)
+        self.detectors = {k: CaptureDetector(self.detector, self.board,
+                          rois["camera"] if self.mode == "individual" else rois[k])
+                          for k in (("cam0",) if self.mode == "individual" else keys)}
+        new_candidate_path(args.world_output if self.mode == "world" else args.output)
         if self.mode in ("stereo", "world"):
             self.labels = {"cam0": f"cam {args.cam0}", "cam1": f"cam {args.cam1}"}
         else:
@@ -126,6 +136,12 @@ class CalibrationRunner(threading.Thread):
             cap, size = open_camera(source, self.args.width, self.args.height,
                                     self.args.fps, focus_val=self.args.focus,
                                     exposure_val=self.args.exposure)
+            if key in self._expected_sizes:
+                try:
+                    require_image_size(size, self._expected_sizes[key], key)
+                except ValueError:
+                    cap.release()
+                    raise
         except Exception as exc:  # noqa: BLE001
             with self.state.lock:
                 self.state.cams[key]["error"] = str(exc)
@@ -138,6 +154,9 @@ class CalibrationRunner(threading.Thread):
 
     def _emit(self, key, frame, corners, ids, mcorners, mids, valid):
         disp = frame.copy()
+        roi = self.detectors[key].roi
+        if roi is not None:
+            cv2.polylines(disp, [np.rint(roi).astype(np.int32)], True, (255, 255, 0), 2)
         annotate_frame(disp, corners, ids, mcorners, mids,
                        markers_only=self.args.markers_only, label=self.labels[key])
         jpeg = encode_jpeg(disp, self.args.display_width)
@@ -183,7 +202,7 @@ class CalibrationRunner(threading.Thread):
                     continue
 
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                corners, ids, mcorners, mids = self.detector.detectBoard(gray)
+                corners, ids, mcorners, mids = self.detectors[key].detectBoard(gray)
                 valid = ids is not None and len(ids) >= MIN_CORNERS
 
                 if self.capture_event.is_set():
@@ -229,7 +248,7 @@ class CalibrationRunner(threading.Thread):
             f"Focal Length (fx, fy): ({K[0, 0]:.2f}, {K[1, 1]:.2f})",
             f"Principal Point (cx, cy): ({K[0, 2]:.2f}, {K[1, 2]:.2f})",
         ]
-        np.savez(a.output, camera_matrix=K, dist_coeffs=D, image_size=self._sizes["cam0"])
+        save_candidate_npz(a.output, camera_matrix=K, dist_coeffs=D, image_size=self._sizes["cam0"], rms_error_px=ret)
         lines.append(f"Saved to {a.output}")
         self.state.set_done(lines)
 
@@ -243,6 +262,8 @@ class CalibrationRunner(threading.Thread):
         K0, D0 = intr0["camera_matrix"], intr0["dist_coeffs"]
         K1, D1 = intr1["camera_matrix"], intr1["dist_coeffs"]
         size0 = tuple(int(x) for x in intr0["image_size"])
+        require_image_size(intr1["image_size"], size0, "cam1 intrinsics")
+        self._expected_sizes = {"cam0": size0, "cam1": size0}
 
         cap0 = self._open("cam0", a.cam0)
         cap1 = self._open("cam1", a.cam1)
@@ -266,8 +287,8 @@ class CalibrationRunner(threading.Thread):
 
                 gray0 = cv2.cvtColor(frame0, cv2.COLOR_BGR2GRAY)
                 gray1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
-                corners0, ids0, mc0, mi0 = self.detector.detectBoard(gray0)
-                corners1, ids1, mc1, mi1 = self.detector.detectBoard(gray1)
+                corners0, ids0, mc0, mi0 = self.detectors["cam0"].detectBoard(gray0)
+                corners1, ids1, mc1, mi1 = self.detectors["cam1"].detectBoard(gray1)
 
                 common_ids = np.array([], dtype=np.int32)
                 if ids0 is not None and ids1 is not None:
@@ -330,7 +351,7 @@ class CalibrationRunner(threading.Thread):
             f"Stereo Reprojection RMS Error: {ret:.4f} px (ideal < 0.8)",
             f"Baseline: {np.linalg.norm(T):.2f} mm",
         ]
-        np.savez(a.output, K0=K0, D0=D0, K1=K1, D1=D1, R=R, T=T, E=E, F=F)
+        save_candidate_npz(a.output, K0=K0, D0=D0, K1=K1, D1=D1, R=R, T=T, E=E, F=F, rms_error_px=ret)
         lines.append(f"Saved to {a.output}")
         self.state.set_done(lines)
 
@@ -344,6 +365,8 @@ class CalibrationRunner(threading.Thread):
             intr = np.load(path)
             K[key] = intr["camera_matrix"].astype(np.float64)
             D[key] = intr["dist_coeffs"].astype(np.float64)
+            self._expected_sizes[key] = tuple(intr["image_size"])
+        require_image_size(self._expected_sizes["cam1"], self._expected_sizes["cam0"], "cam1 intrinsics")
 
         T_world_board = board_to_world(a.world_t, a.world_rpy)
         board_3d = np.asarray(self.board.getChessboardCorners(), np.float64)
@@ -371,8 +394,8 @@ class CalibrationRunner(threading.Thread):
 
                 gray0 = cv2.cvtColor(frame0, cv2.COLOR_BGR2GRAY)
                 gray1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
-                corners0, ids0, mc0, mi0 = self.detector.detectBoard(gray0)
-                corners1, ids1, mc1, mi1 = self.detector.detectBoard(gray1)
+                corners0, ids0, mc0, mi0 = self.detectors["cam0"].detectBoard(gray0)
+                corners1, ids1, mc1, mi1 = self.detectors["cam1"].detectBoard(gray1)
 
                 if self.capture_event.is_set():
                     self.capture_event.clear()
@@ -382,7 +405,9 @@ class CalibrationRunner(threading.Thread):
                         if len(captures[key]) >= a.samples:
                             continue
                         res = solve_camera_world(corners, ids, K[key], D[key],
-                                                 self.board, board_3d, T_world_board)
+                                                 self.board, board_3d, T_world_board, a.max_world_rms_px)
+                        with self.state.lock:
+                            self.state.cams[key]["error"] = None if res["ok"] else res.get("reason", "pose rejected")
                         if not res["ok"]:
                             continue
                         # Keep every valid picture -- no "is this a new pose?"
@@ -398,10 +423,13 @@ class CalibrationRunner(threading.Thread):
                            ids0 is not None and len(ids0) >= MIN_WORLD_CORNERS)
                 self._emit("cam1", frame1, corners1, ids1, mc1, mi1,
                            ids1 is not None and len(ids1) >= MIN_WORLD_CORNERS)
-                self._update_progress(captured, dropped,
+                with self.state.lock:
+                    for key in captures:
+                        self.state.cams[key]["captured"] = len(captures[key])
+                self._update_progress(min(len(v) for v in captures.values()), dropped,
                                       common=sum(1 for v in captures.values() if v))
 
-                if captured >= a.samples and all(captures[k] for k in captures):
+                if world_samples_ready(captures, a.samples):
                     break
 
             self._finish_world(captures, T_world_board, dropped, K, D)
@@ -411,10 +439,13 @@ class CalibrationRunner(threading.Thread):
 
     def _finish_world(self, captures, T_world_board, dropped, K, D):
         a = self.args
+        if not world_samples_ready(captures, a.samples):
+            self.state.set_done([f"Need {a.samples} valid pictures from EACH camera; nothing saved."])
+            return
         best = {}
         for key in ("cam0", "cam1"):
             combined = combine_camera_world(captures[key], K[key], D[key],
-                                            T_world_board)
+                                            T_world_board, a.max_world_rms_px)
             best[key] = combined if combined.get("ok") else None
 
         total = sum(len(v) for v in captures.values())
@@ -442,7 +473,7 @@ class CalibrationRunner(threading.Thread):
         out = pack_world_params(best, T_world_board, self.spec,
                                 self._sizes["cam0"],
                                 stereo_scale=a.stereo_scale)
-        np.savez(a.world_output, **out)
+        save_candidate_npz(a.world_output, **out)
         lines.append(f"Saved to {a.world_output}")
         self.state.set_done(lines)
 
@@ -525,7 +556,7 @@ async function tick() {
     let st = 'manual capture &mdash; click Capture Now to store a pose';
     if (s.mode === 'world') st = 'manual capture &mdash; click Capture Now to store a picture (repeats are kept)';
     if (s.mode === 'stereo') st += ' &middot; common corners: ' + s.common;
-    if (s.mode === 'world') st += ' &middot; cameras solved: ' + s.common + '/2';
+    if (s.mode === 'world') st += ' &middot; valid pictures: cam0 ' + s.cams.cam0.captured + '/' + s.target + ', cam1 ' + s.cams.cam1.captured + '/' + s.target;
     document.getElementById('state').innerHTML = st;
     document.getElementById('msg').textContent = s.message || '';
     document.getElementById('result').textContent =
@@ -600,6 +631,7 @@ def create_app(state, runner, views):
                     "valid": c["valid"],
                     "image_size": c["image_size"],
                     "error": c["error"],
+                    "captured": c["captured"],
                     "missing": [i for i in runner.expected_ids if i not in set(seen)],
                 }
             return jsonify({
@@ -667,6 +699,8 @@ def build_arg_parser():
                         "15 stereo / 10 world pictures; world keeps every valid "
                         "picture, even repeated poses)")
     p.add_argument("--focus", type=int, default=30, help="Manual focus value (0-255)")
+    p.add_argument("--max-world-rms-px", type=float, default=3.0,
+                   help="World pose pixel-quality gate, not a physical accuracy tolerance")
     p.add_argument("--exposure", type=int, default=None,
                    help="Freeze manual exposure (disables auto-exposure/WB)")
     p.add_argument("--width", type=int, default=1920, help="Capture width")
@@ -679,6 +713,7 @@ def build_arg_parser():
     p.add_argument("--host", default="0.0.0.0", help="Bind address")
     p.add_argument("--port", type=int, default=5001, help="HTTP port")
     add_board_argument(p)
+    add_capture_arguments(p)
     return p
 
 

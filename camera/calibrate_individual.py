@@ -4,6 +4,8 @@ import cv2
 import numpy as np
 from charuco_common import (add_board_argument, get_board, open_camera,
                             StabilizedGrabber)
+from calibration_capture import (add_capture_arguments, load_capture_rois, CaptureDetector,
+                                 new_candidate_path, save_candidate_npz)
 
 MIN_CORNERS = 10
 
@@ -46,10 +48,14 @@ def main():
     parser.add_argument("--motion", type=float, default=1.5,
                         help="Max corner displacement (px) between frames to still count as 'still'")
     add_board_argument(parser)
+    add_capture_arguments(parser)
     args = parser.parse_args()
+    new_candidate_path(args.output)
+    rois = load_capture_rois(args, ("camera",))
 
     spec = get_board(args.board)
     board, detector = spec.board, spec.detector
+    detector = CaptureDetector(detector, board, rois["camera"])
 
     # Over SSH (no DISPLAY) the bundled Qt can't create windows, so fall back to headless
     headless = args.headless or not os.environ.get("DISPLAY")
@@ -208,7 +214,7 @@ def main():
     if abs(fx / fy - 1.0) > 0.1:
         print(f"  WARNING: fx/fy = {fx / fy:.2f}; should be ~1.0 for square pixels.")
 
-    np.savez(args.output, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, image_size=image_size)
+    save_candidate_npz(args.output, camera_matrix=camera_matrix, dist_coeffs=dist_coeffs, image_size=image_size, rms_error_px=ret)
     print(f"Successfully saved to {args.output}\n")
 
 if __name__ == "__main__":

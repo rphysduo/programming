@@ -1,5 +1,11 @@
 # Stereo Camera Calibration & Tag Detection
 
+**Capture guards:** see [calibration capture fixes](CALIBRATION_FIXES.md).
+New calibration runs require inspected `--roi-file` polygons, or explicit
+`--allow-full-frame` for a physically isolated target. Existing NPZ files cannot
+be overwritten: choose new candidate outputs. No candidate becomes active
+automatically. Diagnose the preserved files before deciding to recalibrate.
+
 A small Python/OpenCV toolbox for calibrating and validating a **two-camera
 (stereo) vision rig** built around a long **ChArUco calibration board**. It
 covers the whole lifecycle: detect the board, recover each camera's internals,
@@ -65,9 +71,9 @@ wide-FOV coverage, stereo capture and flatness checks.
 ```bash
 # additional intrinsic calibration with the small board
 python calibrate_individual.py --board small --camera 0 \
-    --output cam0_intrinsics_small.npz --samples 20
+    --allow-full-frame --output ../outputs/candidates/cam0_intrinsics_small.npz --samples 20
 python calibrate_individual.py --board small --camera 1 \
-    --output cam1_intrinsics_small.npz --samples 20
+    --allow-full-frame --output ../outputs/candidates/cam1_intrinsics_small.npz --samples 20
 ```
 
 ---
@@ -266,18 +272,23 @@ The three things you need, the board each one uses, and the command:
 python detect_charuco.py --camera 0
 
 # 1. Intrinsics, once per camera, using the SMALL board
-python calibrate_individual.py --board small --camera 0 --output cam0_intrinsics.npz --samples 20
-python calibrate_individual.py --board small --camera 1 --output cam1_intrinsics.npz --samples 20
+python calibrate_individual.py --board small --camera 0 --allow-full-frame --output ../outputs/candidates/cam0_intrinsics.npz --samples 20
+python calibrate_individual.py --board small --camera 1 --allow-full-frame --output ../outputs/candidates/cam1_intrinsics.npz --samples 20
 
 # 2. Stereo extrinsics (both cameras see the SMALL board)
-python calibrate_studio.py --board small --cam0 0 --cam1 1 --samples 15
+python calibrate_studio.py --board small --cam0 0 --cam1 1 --allow-full-frame --samples 15 \
+  --param0 ../outputs/candidates/cam0_intrinsics.npz --param1 ../outputs/candidates/cam1_intrinsics.npz \
+  --output ../outputs/candidates/stereo_params.npz
 
 # 2b/4a. Big-board detection evidence, once per camera (long 4x35 board)
 python detect_charuco.py --board long --camera 0 --save-annotated tank_cam0.png
 python detect_charuco.py --board long --camera 1 --save-annotated tank_cam1.png
 
 # 2b/4b. Camera poses in the tank frame, from the long floor board
-python calibrate_world.py --board long --cam0 0 --cam1 1 --save-images
+python calibrate_world.py --board long --cam0 0 --cam1 1 --save-images \
+  --roi-file direct_board_roi.json --output ../outputs/candidates/tank_alignment.npz \
+  --param0 ../outputs/candidates/cam0_intrinsics.npz --param1 ../outputs/candidates/cam1_intrinsics.npz \
+  --stereo ../outputs/candidates/stereo_params.npz
 
 # 3. Validate against a tape measure
 python test_calibration.py --cam0 0 --cam1 1
@@ -349,27 +360,28 @@ python web_tags.py --board small              # track the small 6x8 board instea
 
 # Calibration assistant: capture poses in the browser, solve in-browser
 # Step A - intrinsics, once per camera, with the SMALL board
-python web_calibrate.py --mode individual --board small --camera 0 --output cam0_intrinsics.npz
-python web_calibrate.py --mode individual --board small --camera 1 --output cam1_intrinsics.npz
+python web_calibrate.py --mode individual --board small --camera 0 --allow-full-frame --output ../outputs/candidates/web_cam0.npz
+python web_calibrate.py --mode individual --board small --camera 1 --allow-full-frame --output ../outputs/candidates/web_cam1.npz
 
 # Step B - cameras relative to each other, SMALL board seen by both
 python web_calibrate.py --mode stereo --board small --cam0 0 --cam1 1 \
-    --param0 cam0_intrinsics.npz --param1 cam1_intrinsics.npz
+    --allow-full-frame --param0 cam0_intrinsics.npz --param1 cam1_intrinsics.npz \
+    --output ../outputs/candidates/web_stereo.npz
 
 # Step C - cameras relative to the tank, LONG floor board
 #   (place the board in the tank; add --tank-t / --tank-rpy if the board
-#    frame is not already the tank frame; defaults assume it is)
+#    frame is not already the tank frame; the identity default is a placeholder)
 #   10 pictures are captured/kept per camera by default (--samples 10)
 python web_calibrate.py --mode world --board long --cam0 0 --cam1 1 \
     --param0 cam0_intrinsics.npz --param1 cam1_intrinsics.npz \
-    --tank-output tank_alignment.npz
+    --roi-file direct_board_roi.json --tank-output ../outputs/candidates/web_tank.npz
 ```
 
 The web UI defaults to port **5001** (`--port 5001`), so open
 `http://<host>:5001/`. In `web_calibrate.py` press **Capture Now** to store each
-pose and **Finish & Calibrate** to solve. It writes the exact same files the CLI
-does (`cam0_intrinsics.npz`, `cam1_intrinsics.npz`, `stereo_params.npz`,
-`tank_alignment.npz`).
+pose and **Finish & Calibrate** to solve. World mode requires the requested
+count from each camera before it will save. It writes the same NPZ schema as
+the CLI to a new candidate path; existing files are never replaced.
 
 The dry-validation tool has its own browser UIs (ports **5002** for capture and
 **5003** for labelling):
@@ -405,6 +417,9 @@ derived geometry for each point:
 The derived fields are recomputed on every save; the raw `cam0`/`cam1` pixels
 remain authoritative. Opening an older pair computes them for display, and
 pressing **Save** writes them into that pair's `correspondences.json`.
+The label-page banner now displays the loaded snapshot's baseline and warns
+when available source calibration files differ. Expand it for paths and hashes;
+use a new session to validate newer calibration files.
 
 The **Results** button opens the browser results viewer at
 `http://<host>:5003/results`. It shows tolerance status, measurement tables,

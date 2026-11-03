@@ -4,6 +4,9 @@ import cv2
 import numpy as np
 from charuco_common import (add_board_argument, get_board, open_camera,
                             StabilizedGrabber)
+from calibration_capture import (add_capture_arguments, load_capture_rois, CaptureDetector,
+                                 averaged_stereo_points, require_image_size,
+                                 new_candidate_path, save_candidate_npz)
 
 MIN_COMMON = 10
 
@@ -28,10 +31,15 @@ def main():
     parser.add_argument("--motion", type=float, default=1.5,
                         help="Max corner displacement (px) between frames to still count as 'still'")
     add_board_argument(parser)
+    add_capture_arguments(parser)
     args = parser.parse_args()
+    new_candidate_path(args.output)
+    rois = load_capture_rois(args, ("cam0", "cam1"))
 
     spec = get_board(args.board)
     board, detector = spec.board, spec.detector
+    detector0 = CaptureDetector(detector, board, rois["cam0"])
+    detector1 = CaptureDetector(detector, board, rois["cam1"])
 
     # Over SSH (no DISPLAY) the bundled Qt can't create windows, so fall back to headless
     headless = args.headless or not os.environ.get("DISPLAY")
@@ -43,9 +51,21 @@ def main():
     K0, D0 = intrinsics0['camera_matrix'], intrinsics0['dist_coeffs']
     K1, D1 = intrinsics1['camera_matrix'], intrinsics1['dist_coeffs']
     size0 = tuple(intrinsics0['image_size'])
+    require_image_size(intrinsics1['image_size'], size0, "cam1 intrinsics")
 
-    cap0, _ = open_camera(args.cam0, 1920, 1080, 30, focus_val=args.focus, exposure_val=args.exposure)
-    cap1, _ = open_camera(args.cam1, 1920, 1080, 30, focus_val=args.focus, exposure_val=args.exposure)
+    cap0, actual0 = open_camera(args.cam0, 1920, 1080, 30, focus_val=args.focus, exposure_val=args.exposure)
+    try:
+        cap1, actual1 = open_camera(args.cam1, 1920, 1080, 30, focus_val=args.focus, exposure_val=args.exposure)
+    except Exception:
+        cap0.release()
+        raise
+    try:
+        require_image_size(actual0, size0, "cam0 capture")
+        require_image_size(actual1, size0, "cam1 capture")
+    except ValueError:
+        cap0.release()
+        cap1.release()
+        raise
 
     board_3d_corners = board.getChessboardCorners()
 
@@ -77,8 +97,8 @@ def main():
         gray0 = cv2.cvtColor(frame0, cv2.COLOR_BGR2GRAY)
         gray1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
 
-        corners0, ids0, _, _ = detector.detectBoard(gray0)
-        corners1, ids1, _, _ = detector.detectBoard(gray1)
+        corners0, ids0, _, _ = detector0.detectBoard(gray0)
+        corners1, ids1, _, _ = detector1.detectBoard(gray1)
 
         common_ids = np.array([])
         if ids0 is not None and ids1 is not None:
@@ -98,15 +118,14 @@ def main():
 
                 capture = grabber.update(det)
                 if capture is not None:
-                    cids = sorted(cid for _, cid in capture)
-                    pts0 = np.array([capture[(0, cid)] for cid in cids], np.float32)
-                    pts1 = np.array([capture[(1, cid)] for cid in cids], np.float32)
-                    obj_pts = np.array([board_3d_corners[cid] for cid in cids], np.float32)
+                    obj_pts, pts0, pts1 = averaged_stereo_points(capture, board_3d_corners)
+                    if len(obj_pts) < MIN_COMMON:
+                        continue
                     img_points_0.append(pts0)
                     img_points_1.append(pts1)
                     obj_points.append(obj_pts)
                     print(f"Auto-captured pair {len(obj_points)}/{args.samples} "
-                          f"with {len(cids)} matched points.")
+                          f"with {len(obj_pts)} unique matched points.")
                 elif total_frames % 30 == 0:
                     if grabber.state == "settling":
                         print(f"[{total_frames:5d}] both cams see board - hold still, "
@@ -185,11 +204,11 @@ def main():
     print(f"  Translation Vector T (mm):\n{T.ravel()}")
     print(f"  Calculated Baseline (Distance): {np.linalg.norm(T):.2f} mm")
 
-    np.savez(
+    save_candidate_npz(
         args.output,
         K0=K0, D0=D0,
         K1=K1, D1=D1,
-        R=R, T=T, E=E, F=F
+        R=R, T=T, E=E, F=F, rms_error_px=ret
     )
     print(f"Saved stereo extrinsic data to {args.output}\n")
 

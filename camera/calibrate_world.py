@@ -20,11 +20,11 @@ Board frame convention (from ``CharucoBoard.getChessboardCorners``)::
     +y  along the long  (squaresY) edge
     +z  out of the printed face
 
-Sitting face-up on the floor, ``+z`` points up.  ``--world-t`` / ``--tank-t``
+The printed-board normal is not automatically physical up. ``--world-t`` / ``--tank-t``
 (mm) and ``--world-rpy`` / ``--tank-rpy`` (degrees, fixed-axis XYZ:
 roll about x, pitch about y, yaw about z, ``R = Rz @ Ry @ Rx``) place that
-board frame inside the tank frame.  The defaults make the tank frame identical
-to the board frame (x across, y along, z up).
+board frame inside the tank frame. The identity default is only a placeholder;
+physical tank axes must be measured independently.
 
 Output ``tank_alignment.npz``::
 
@@ -44,7 +44,7 @@ Output ``tank_alignment.npz``::
 
 Run::
 
-    python calibrate_world.py --board long --cam0 0 --cam1 1 --save-images
+    python calibrate_world.py --board long --roi-file direct_board_roi.json --output ../outputs/candidates/tank.npz --save-images
 
 By default it keeps and combines 10 valid pictures per camera (``--samples``).
 """
@@ -56,6 +56,8 @@ import cv2
 import numpy as np
 
 from charuco_common import add_board_argument, get_board, open_camera
+from calibration_capture import (add_capture_arguments, load_capture_rois, CaptureDetector,
+                                 require_image_size, new_candidate_path, save_candidate_npz, world_samples_ready)
 
 #: Fewest board corners a single camera needs for a usable planar pose.  IPPE
 #: needs four; six gives the solve room to breathe on the thin 4-wide strip.
@@ -108,34 +110,62 @@ def draw_detection(frame, corners, ids, label=""):
     return out
 
 
-def _solve_board_points(obj, img, K, D, T_world_board):
-    """Least-squares board->camera pose from one or more captures' points."""
+def _solve_board_points(obj, img, K, D, T_world_board, max_rms_px=3.0):
+    """Solve a planar pose, rejecting degenerate/nonfinite/behind-camera fits.
+
+    ``max_rms_px`` is a configurable pixel-quality gate, not a metric accuracy
+    guarantee. Repeated observations are allowed, but unique object points must
+    contain a two-dimensional board patch.
+    """
     obj = np.asarray(obj, np.float64).reshape(-1, 3)
     img = np.asarray(img, np.float64).reshape(-1, 2)
     K = np.asarray(K, np.float64)
     D = np.asarray(D, np.float64)
-    ok, rvec, tvec = cv2.solvePnP(obj, img, K, D, flags=cv2.SOLVEPNP_IPPE)
-    if not ok:
+    T_world_board = np.asarray(T_world_board, np.float64)
+    if (len(obj) != len(img) or len(obj) < MIN_WORLD_CORNERS
+            or K.shape != (3, 3) or T_world_board.shape != (4, 4)
+            or any(not np.all(np.isfinite(a)) for a in (obj, img, K, D, T_world_board))
+            or not np.isfinite(max_rms_px) or max_rms_px <= 0):
+        return None
+    if K[0, 0] <= 0 or K[1, 1] <= 0 or not np.allclose(K[2], [0, 0, 1]):
+        return None
+    unique = np.unique(obj, axis=0)
+    if (len(unique) < MIN_WORLD_CORNERS or np.linalg.matrix_rank(unique[:, :2] - unique[:, :2].mean(0)) < 2
+            or not np.allclose(obj[:, 2], 0)
+            or not np.allclose(T_world_board[3], [0, 0, 0, 1])
+            or not np.allclose(T_world_board[:3, :3].T @ T_world_board[:3, :3], np.eye(3), atol=1e-6)
+            or not np.isclose(np.linalg.det(T_world_board[:3, :3]), 1., atol=1e-6)):
+        return None
+    try:
+        ok, rvec, tvec = cv2.solvePnP(obj, img, K, D, flags=cv2.SOLVEPNP_IPPE)
+    except cv2.error:
+        return None
+    if not ok or not np.all(np.isfinite(rvec)) or not np.all(np.isfinite(tvec)):
         return None
 
     R_cb = cv2.Rodrigues(rvec)[0]              # board -> camera
     t_cb = tvec.reshape(3)
+    if (not np.all(np.isfinite(R_cb))
+            or np.any((obj @ R_cb.T + t_cb)[:, 2] <= 1e-6)):
+        return None
     proj, _ = cv2.projectPoints(obj, rvec, tvec, K, D)
     rms = float(np.sqrt(np.mean(np.sum((proj.reshape(-1, 2) - img) ** 2, axis=1))))
+    if not np.isfinite(rms) or rms > max_rms_px:
+        return None
 
     R_wb = T_world_board[:3, :3]               # board -> world
     t_wb = T_world_board[:3, 3]
     R_cw = R_cb @ R_wb.T                       # world -> camera
     t_cw = t_cb - R_cw @ t_wb
     center_world = -R_cw.T @ t_cw              # camera centre in world
-    return {"ok": True, "rms": rms, "n": len(obj),
+    return {"ok": True, "rms": rms, "max_world_rms_px": float(max_rms_px), "n": len(obj),
             "R_board_cam": R_cb, "t_board_cam": t_cb,
             "R_cam_world": R_cw, "t_cam_world": t_cw,
             "center_world": center_world,
             "obj": obj, "img": img}
 
 
-def solve_camera_world(corners, ids, K, D, board, board_3d, T_world_board):
+def solve_camera_world(corners, ids, K, D, board, board_3d, T_world_board, max_rms_px=3.0):
     """Pose of one camera in the world frame from a single board view.
 
     Returns a dict with ``ok`` plus, on success, ``rms`` (px), the raw
@@ -143,21 +173,25 @@ def solve_camera_world(corners, ids, K, D, board, board_3d, T_world_board):
     ``t_cam_world`` (``X_cam = R @ X_world + t``), ``center_world`` (camera
     centre, mm), ``n`` (corners used) and the matched ``obj``/``img`` points.
     """
-    if ids is None:
+    if ids is None or corners is None:
         return {"ok": False, "reason": "no board"}
     idx = np.asarray(ids).flatten().astype(int)
+    if (len(idx) != len(np.asarray(corners).reshape(-1, 2))
+            or np.any(idx < 0) or np.any(idx >= len(board_3d))
+            or len(np.unique(idx)) != len(idx)):
+        return {"ok": False, "reason": "invalid or ambiguous corner IDs"}
     obj = np.asarray(board_3d, np.float64)[idx].reshape(-1, 3)
     img = np.asarray(corners, np.float64).reshape(-1, 2)
     if len(obj) < MIN_WORLD_CORNERS:
         return {"ok": False, "reason": f"only {len(obj)} corners"}
 
-    res = _solve_board_points(obj, img, K, D, T_world_board)
+    res = _solve_board_points(obj, img, K, D, T_world_board, max_rms_px)
     if res is None:
-        return {"ok": False, "reason": "solvePnP failed"}
+        return {"ok": False, "reason": "pose rejected: check 2D coverage, finite values, positive depth and RMS limit"}
     return res
 
 
-def combine_camera_world(results, K, D, T_world_board):
+def combine_camera_world(results, K, D, T_world_board, max_rms_px=3.0):
     """Combine every accepted capture for one camera into a single pose.
 
     Captures are deliberately *not* checked for uniqueness: each picture's
@@ -167,14 +201,9 @@ def combine_camera_world(results, K, D, T_world_board):
     frames = [r for r in results if r is not None and r.get("ok")]
     if not frames:
         return {"ok": False, "reason": "no board"}
-    if len(frames) == 1:
-        res = dict(frames[0])
-        res["frames"] = 1
-        return res
-
     obj = np.concatenate([r["obj"] for r in frames], axis=0)
     img = np.concatenate([r["img"] for r in frames], axis=0)
-    res = _solve_board_points(obj, img, K, D, T_world_board)
+    res = _solve_board_points(obj, img, K, D, T_world_board, max_rms_px)
     if res is None:
         return {"ok": False, "reason": "solvePnP failed"}
     res["frames"] = len(frames)
@@ -201,12 +230,19 @@ def pack_world_params(best, T_world_board, spec, image_size,
         res = best[key]
         if res is None:
             continue
+        if not res.get("ok") or not np.isfinite(res.get("rms", np.nan)):
+            raise ValueError(f"cannot pack invalid {key} world pose")
+        for field in ("R_board_cam", "t_board_cam", "R_cam_world", "t_cam_world", "center_world"):
+            if not np.all(np.isfinite(res[field])):
+                raise ValueError(f"cannot pack nonfinite {key} {field}")
         out[f"R_board_to_{key}"] = res["R_board_cam"]
         out[f"t_board_to_{key}"] = res["t_board_cam"].reshape(3, 1)
         out[f"R_{key}_world"] = res["R_cam_world"]
         out[f"t_{key}_world"] = res["t_cam_world"].reshape(3, 1)
         out[f"{key}_center_world"] = res["center_world"]
         out[f"{key}_frames"] = np.array(res.get("frames", 1), dtype=int)
+        out[f"{key}_rms_px"] = np.array(res["rms"], dtype=np.float64)
+        out[f"{key}_max_rms_px"] = np.array(res.get("max_world_rms_px", 3.0), dtype=np.float64)
     return out
 
 
@@ -244,35 +280,54 @@ def build_arg_parser():
                    help="Pictures to combine per camera (default 10); every "
                         "valid picture is kept, even if it repeats a pose")
     p.add_argument("--max-frames", type=int, default=6000, help="Hard frame stop")
+    p.add_argument("--max-world-rms-px", type=float, default=3.0,
+                   help="World pose pixel-quality gate (default 3 px); not a metric accuracy tolerance")
     p.add_argument("--headless", action="store_true",
                    help="No GUI window (auto-enabled when DISPLAY is unset)")
     add_board_argument(p)
+    add_capture_arguments(p)
     return p
 
 
 def main():
     args = build_arg_parser().parse_args()
+    new_candidate_path(args.output)
+    rois = load_capture_rois(args, ("cam0", "cam1"))
     if args.board != "long":
         raise SystemExit(
             "Stage 4 tank alignment requires --board long (4x35, 44/33 mm); "
             f"got {args.board!r}. The small board is only for intrinsics.")
     spec = get_board(args.board)
     board, detector = spec.board, spec.detector
+    detectors = {k: CaptureDetector(detector, board, rois[k]) for k in rois}
     headless = args.headless or not os.environ.get("DISPLAY")
 
-    K, D = {}, {}
+    K, D, sizes = {}, {}, {}
     for key, path in (("cam0", args.param0), ("cam1", args.param1)):
         d = np.load(path)
         K[key] = d["camera_matrix"].astype(np.float64)
         D[key] = d["dist_coeffs"].astype(np.float64)
+        sizes[key] = tuple(d["image_size"])
+    require_image_size(sizes["cam1"], sizes["cam0"], "cam1 intrinsics")
 
     T_world_board = board_to_world(args.world_t, args.world_rpy)
     board_3d = np.asarray(board.getChessboardCorners(), np.float64)
 
-    cap0, _ = open_camera(args.cam0, 1920, 1080, 30, focus_val=args.focus,
+    cap0, actual0 = open_camera(args.cam0, 1920, 1080, 30, focus_val=args.focus,
                           exposure_val=args.exposure)
-    cap1, _ = open_camera(args.cam1, 1920, 1080, 30, focus_val=args.focus,
-                          exposure_val=args.exposure)
+    try:
+        cap1, actual1 = open_camera(args.cam1, 1920, 1080, 30, focus_val=args.focus,
+                                   exposure_val=args.exposure)
+    except Exception:
+        cap0.release()
+        raise
+    try:
+        require_image_size(actual0, sizes["cam0"], "cam0 capture")
+        require_image_size(actual1, sizes["cam1"], "cam1 capture")
+    except ValueError:
+        cap0.release()
+        cap1.release()
+        raise
 
     print("\n--- Stage 4: Camera-to-Tank Alignment ---")
     print(f"Board: {spec.label} | {spec.grid[0]}x{spec.grid[1]} squares, "
@@ -298,16 +353,18 @@ def main():
 
         gray0 = cv2.cvtColor(frame0, cv2.COLOR_BGR2GRAY)
         gray1 = cv2.cvtColor(frame1, cv2.COLOR_BGR2GRAY)
-        corners0, ids0, _, _ = detector.detectBoard(gray0)
-        corners1, ids1, _, _ = detector.detectBoard(gray1)
+        corners0, ids0, _, _ = detectors["cam0"].detectBoard(gray0)
+        corners1, ids1, _, _ = detectors["cam1"].detectBoard(gray1)
 
         for key, corners, ids, frame in (("cam0", corners0, ids0, frame0),
                                          ("cam1", corners1, ids1, frame1)):
             if len(captures[key]) >= args.samples:
                 continue
             res = solve_camera_world(corners, ids, K[key], D[key], board,
-                                     board_3d, T_world_board)
+                                     board_3d, T_world_board, args.max_world_rms_px)
             if not res["ok"]:
+                if total % 30 == 0:
+                    print(f"  {key}: rejected: {res['reason']}")
                 continue
             # Keep every valid picture: repeated/similar views are averaged
             # together at the end instead of being rejected.
@@ -321,7 +378,7 @@ def main():
                   f"rms {res['rms']:5.2f}px  {res['n']:3d} corners  "
                   f"centre ({c[0]:7.1f}, {c[1]:7.1f}, {c[2]:7.1f}) mm")
 
-        if all(len(captures[k]) >= args.samples for k in captures):
+        if world_samples_ready(captures, args.samples):
             break
         if total >= args.max_frames:
             print("Hit frame limit.")
@@ -339,10 +396,13 @@ def main():
     if not headless:
         cv2.destroyAllWindows()
 
+    if not world_samples_ready(captures, args.samples):
+        print(f"Need {args.samples} valid pictures from EACH camera; nothing saved.")
+        return
     best = {}
     for key in ("cam0", "cam1"):
         combined = combine_camera_world(captures[key], K[key], D[key],
-                                        T_world_board)
+                                        T_world_board, args.max_world_rms_px)
         best[key] = combined if combined.get("ok") else None
 
     if best["cam0"] is None or best["cam1"] is None:
@@ -351,7 +411,7 @@ def main():
 
     out = pack_world_params(best, T_world_board, spec, image_size,
                             stereo_scale=args.stereo_scale)
-    np.savez(args.output, **out)
+    save_candidate_npz(args.output, **out)
 
     if args.save_images:
         stem = os.path.splitext(args.output)[0]

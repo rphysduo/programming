@@ -46,21 +46,30 @@ require camera hardware.
 ### Calibrate the rig
 
 Run camera commands from `camera/` so the default calibration paths resolve:
+New calibration runs require an inspected `--roi-file`, or explicit
+`--allow-full-frame` for a physically isolated target without reflected/other
+boards. Existing output files cannot be overwritten. The commands below are
+future candidate runs, not a request to redo the preserved calibration.
 
 ```bash
 cd camera
 
 # 1. Fit each camera's lens parameters using varied poses of the small board.
-python calibrate_individual.py --board small --camera 0 --output cam0_intrinsics.npz --samples 20
-python calibrate_individual.py --board small --camera 1 --output cam1_intrinsics.npz --samples 20
+python calibrate_individual.py --board small --camera 0 --allow-full-frame --output ../outputs/candidates/cam0_intrinsics.npz --samples 20
+python calibrate_individual.py --board small --camera 1 --allow-full-frame --output ../outputs/candidates/cam1_intrinsics.npz --samples 20
 
 # 2. Fit the relative camera rotation and translation.
-python calibrate_studio.py --board small --cam0 0 --cam1 1 --samples 15
+python calibrate_studio.py --board small --cam0 0 --cam1 1 --allow-full-frame \
+  --param0 ../outputs/candidates/cam0_intrinsics.npz --param1 ../outputs/candidates/cam1_intrinsics.npz \
+  --output ../outputs/candidates/stereo_params.npz --samples 15
 
 # 3. Locate the fixed cameras relative to the stationary long floor board.
-python calibrate_world.py --board long --cam0 0 --cam1 1 --save-images
+python calibrate_world.py --board long --cam0 0 --cam1 1 --roi-file direct_board_roi.json \
+  --param0 ../outputs/candidates/cam0_intrinsics.npz --param1 ../outputs/candidates/cam1_intrinsics.npz \
+  --stereo ../outputs/candidates/stereo_params.npz --output ../outputs/candidates/tank_alignment.npz --save-images
 
 # 4. Check reconstruction against physically measured distances.
+# Default paths below deliberately validate the preserved ACTIVE files.
 python test_calibration.py --board long --cam0 0 --cam1 1
 ```
 
@@ -73,12 +82,15 @@ between calibration and measurement.
 For the browser calibration assistant, run one stage at a time:
 
 ```bash
-python web_calibrate.py --mode individual --board small --camera 0 --output cam0_intrinsics.npz
+python web_calibrate.py --mode individual --board small --camera 0 --allow-full-frame \
+  --output ../outputs/candidates/web_cam0_intrinsics.npz
 ```
 
 Open `http://localhost:5001`. Repeat for camera 1 with its own output file,
 then use `--mode stereo --board small` and `--mode world --board long`.
 See the [camera guide](camera/README.md) for capture controls and other tools.
+See [calibration capture fixes](camera/CALIBRATION_FIXES.md) for the new guards,
+ROI schema, sample-count requirements, and visible session calibration identity.
 
 ### Understand the calibration files
 

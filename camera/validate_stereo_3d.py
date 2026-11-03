@@ -81,6 +81,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import html
 import itertools
 import json
 import math
@@ -3118,6 +3119,8 @@ LABEL_WEB_TEMPLATE = r"""<!doctype html>
   #saveState { color:#ffd479; font-size:.84rem; margin-left:4px; }
   #warning { color:#ffd479; background:#3a2b08; border:1px solid #8a6514;
              border-radius:6px; padding:7px 9px; margin-top:8px; font-size:.82rem; }
+  #calibrationInfo { color:#9ad; font-size:.8rem; white-space:pre-wrap; margin-top:8px; }
+  #calibrationInfo.mismatch { color:#ffd479; }
   #message { color:#cfe; margin-top:8px; min-height:1.2em; font-size:.86rem;
              white-space:pre-wrap; }
   #message.error { color:#ff6b6b; }
@@ -3167,6 +3170,7 @@ LABEL_WEB_TEMPLATE = r"""<!doctype html>
     <span id="saveState">saved</span>
   </div>
   <div id="warning">C920s are not synchronized; the reference object must stay still.</div>
+  __CALIBRATION_BANNER__
   <div id="message"></div>
 </header>
 <main>
@@ -6090,6 +6094,31 @@ def _pair_image_sizes(pair_dir: Path) -> tuple[tuple[int, int], tuple[int, int]]
             (img1.shape[1], img1.shape[0]))
 
 
+def label_calibration_info(cal: Calibration) -> dict:
+    """Show the loaded parameter snapshot and compare available source files.
+
+    The comparison never substitutes files or mutates a validation session.
+    Hashes describe the arrays loaded at server startup.
+    """
+    files, different = {}, []
+    for name, active in cal.paths.items():
+        active = Path(active)
+        manifest_path = active.parent / "manifest.json"
+        manifest = read_json(manifest_path) if manifest_path.exists() else {}
+        recorded = manifest.get("files", {}).get(name, {}).get("source_path")
+        source = Path(recorded) if recorded and Path(recorded).is_file() else DEFAULT_CALIB[name]
+        source_hash = sha256_file(source) if source.is_file() else None
+        matches = source_hash == cal.hashes[name] if source_hash is not None else None
+        if matches is False:
+            different.append(name)
+        files[name] = {"loaded_path": str(active.resolve()), "loaded_sha256": cal.hashes[name],
+                       "compared_source_path": str(source.resolve()), "source_sha256": source_hash,
+                       "source_matches_loaded": matches}
+    return {"baseline_mm": cal.baseline_mm, "files": files,
+            "different_source_files": different,
+            "note": "Loaded snapshot is preserved. New root calibration files do not replace a session snapshot. valid is not physical accuracy."}
+
+
 def create_label_web_app(session: Path, cal: Calibration, pairs: list[Path],
                          display_width: int):
     """Create the browser correspondence labeler for saved pairs."""
@@ -6098,12 +6127,28 @@ def create_label_web_app(session: Path, cal: Calibration, pairs: list[Path],
     app = Flask(__name__)
     by_name = {pair.name: pair for pair in pairs}
     canvas_width = int(display_width) if display_width and display_width > 0 else 900
+    calibration_info = label_calibration_info(cal)
+    banner_lines = [f"ACTIVE calibration baseline: {cal.baseline_mm:.4f} mm (loaded at server startup)"]
+    for name, entry in calibration_info["files"].items():
+        banner_lines.append(f"{name}: {entry['loaded_path']} | SHA256 {entry['loaded_sha256'][:16]}...")
+    if calibration_info["different_source_files"]:
+        banner_lines.append("WARNING: source calibration differs: " + ", ".join(calibration_info["different_source_files"]))
+    banner_lines.append(calibration_info["note"])
+    css_class = "mismatch" if calibration_info["different_source_files"] else ""
+    banner = f'<details id="calibrationInfo" class="{css_class}"><summary>{html.escape(banner_lines[0])}'
+    if css_class:
+        banner += ' — WARNING: different source calibration files'
+    banner += '</summary>' + html.escape("\n".join(banner_lines[1:])) + '</details>'
     page = LABEL_WEB_TEMPLATE.replace(
-        "__DISPLAY_WIDTH__", str(max(320, canvas_width)))
+        "__DISPLAY_WIDTH__", str(max(320, canvas_width))).replace("__CALIBRATION_BANNER__", banner)
 
     @app.route("/")
     def index():
         return page
+
+    @app.route("/api/calibration")
+    def calibration_api():
+        return jsonify(calibration_info)
 
     @app.route("/results")
     def results_page():
@@ -6176,6 +6221,10 @@ def create_label_web_app(session: Path, cal: Calibration, pairs: list[Path],
                 f"{cal.size0}/{cal.size1}; measure will reject this pair.")
         if meta.get("warning"):
             warnings.append(str(meta["warning"]))
+        capture_mismatches = [name for name, digest in meta.get("calibration_hashes", {}).items()
+                              if name in cal.hashes and digest != cal.hashes[name]]
+        if capture_mismatches:
+            warnings.append("Pair was captured with different calibration hashes: " + ", ".join(capture_mismatches))
         return jsonify({
             "pair": name,
             "points": points,
@@ -6184,6 +6233,7 @@ def create_label_web_app(session: Path, cal: Calibration, pairs: list[Path],
             "cam1_url": f"/pair/{quote(name, safe='')}/cam1.png",
             "warnings": warnings,
             "label_geometry": label_geometry,
+            "calibration": calibration_info,
         })
 
     @app.route("/pair/<name>/<camera>.png")

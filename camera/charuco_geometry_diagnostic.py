@@ -26,6 +26,7 @@ import cv2
 import numpy as np
 
 from charuco_common import add_board_argument, get_board
+from calibration_capture import validate_roi
 from validate_stereo_3d import triangulate_point
 
 
@@ -191,20 +192,6 @@ def detect_charuco_points(
         points = {i: p for i, p in points.items()
                   if cv2.pointPolygonTest(polygon, tuple(p), False) >= 0}
     return points, duplicates
-
-
-def validate_roi(roi, image_shape) -> np.ndarray:
-    """Validate a simple convex raw-pixel polygon; refuse invalid/cropped coordinates."""
-    polygon = np.asarray(roi, np.float32)
-    h, w = image_shape
-    if (polygon.ndim != 2 or polygon.shape[1] != 2 or len(polygon) < 3
-            or not np.all(np.isfinite(polygon))
-            or np.any(polygon < 0) or np.any(polygon[:, 0] >= w)
-            or np.any(polygon[:, 1] >= h)
-            or not cv2.isContourConvex(polygon)
-            or abs(cv2.contourArea(polygon)) < 1):
-        raise ValueError("ROI must be a nondegenerate convex polygon inside the raw image")
-    return polygon
 
 
 def _homography_inliers(
