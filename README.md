@@ -100,6 +100,7 @@ From `camera/`, this example processes a pair already present in the repository:
 ```bash
 python charuco_geometry_diagnostic.py --board long \
   --pair-dir validation/pairs/pair_0018_20261029_142637 \
+  --roi-file diagnostics/pair_0018_direct_board_roi.json \
   --output-dir ../outputs/charuco_geometry_diagnostic
 ```
 
@@ -109,6 +110,9 @@ It also compares saved stereo `R,T` with the relative geometry implied by the
 two board poses, and checks calibration-file hashes against capture metadata.
 It writes a JSON summary and per-corner CSV without changing calibration files.
 Its classification thresholds are demonstration values.
+
+Follow the [diagnostic lab procedure](camera/diagnostics/README.md) to inspect
+calibration hashes, verify the direct-board ROI, and interpret signed errors.
 
 A board corner should reconstruct near its known position and near board
 `Z=0`. Water-surface points must be allowed to reconstruct above the floor.

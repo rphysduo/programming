@@ -285,6 +285,7 @@ python test_calibration.py --cam0 0 --cam1 1
 # 4. Diagnose all three geometric estimates on a saved LONG-board pair
 python charuco_geometry_diagnostic.py --board long \
   --pair-dir validation/pairs/pair_0018_20261029_142637 \
+  --roi-file diagnostics/pair_0018_direct_board_roi.json \
   --output-dir ../outputs/charuco_geometry_diagnostic
 
 # Optional: is the printed board actually flat?
@@ -295,6 +296,12 @@ python check_flatness.py --camera 0 --param cam0_intrinsics.npz
 > (or a script + the browser tools) against the same device simultaneously.
 
 ### Automatic board-geometry diagnostic
+
+See [the diagnostic findings and lab procedure](diagnostics/README.md) for the
+staged investigation, current calibration hashes, raw-pixel ROI setup, exact
+capture/reproduction commands, and independent ruler/height follow-up.
+Reports now include signed residuals, invalid points, annotated raw images,
+and optional headless spatial/3D plots. Use a fresh output directory each run.
 
 `charuco_geometry_diagnostic.py` treats every reliably detected long-board
 corner as a known 3-D reference point. For 10–20 spatially distributed corner
@@ -308,6 +315,11 @@ IDs it reports three estimates without conflating them:
 Homography RANSAC must accept a corner in both images before it is analyzed.
 This rejects isolated glare/reflection detections and interpolation outliers;
 ambiguous duplicate IDs, which can indicate a reflected copy, are excluded.
+Homography filtering alone cannot reject a coherent reflection. The CLI now
+requires a user-inspected direct-board polygon for each camera, applied before
+decoding while retaining raw pixel coordinates. Full-frame reconstruction is
+available only with explicit `--allow-unverified-full-frame`; use
+`--preview-only` to inspect detections first.
 The stereo result is **not** projected back onto `Z=0`, because its reconstructed
 height error is one of the measurements the diagnostic is intended to expose.
 

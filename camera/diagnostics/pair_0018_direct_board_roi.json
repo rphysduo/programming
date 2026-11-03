@@ -1,0 +1,5 @@
+{
+  "description": "Raw 1920x1080 polygons for pair_0018_20261029_142637 ONLY. Review the previews; do not reuse after camera/board movement. Polygons deliberately exclude acrylic wall reflections.",
+  "cam0": [[205, 638], [1620, 376], [1680, 848], [207, 825]],
+  "cam1": [[319, 194], [1748, 361], [1742, 566], [320, 641]]
+}
