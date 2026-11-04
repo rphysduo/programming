@@ -5,6 +5,37 @@ rig, change any saved parameters, or correct previously reconstructed points.
 Continue the [dry-board diagnostic procedure](diagnostics/README.md) before
 deciding whether a new physical calibration is necessary.
 
+## Interpreting negative Z and invalid points
+
+Negative **board** Z is allowed. The triangulator requires positive depth in
+each **camera** frame; a point behind either camera remains invalid. Reprojection
+error over 3 px in either camera, Sampson epipolar error over 2 px, undefined
+coordinates, or ray angles below 0.01 degrees also reject a point. These gates
+are unchanged. The label table now displays the actual rejection explanations,
+camera depths, reprojection/epipolar values and ray angle in a visible
+**Geometry diagnostics** column. It previously showed flags only on hover.
+Reopening a pair recomputes explanations; Save persists them with the derived
+geometry. Accepted geometry still does not certify physical accuracy.
+
+The capture crosshair at `(0,+176,0)` mm is a preview-only location, not the
+saved board origin. `--preview-origin-y-rows 0` shows the original `(0,0,0)`.
+Neither setting changes saved points or point-to-point distances. With board
++Z physically downward, raised points may have negative board Z, but a point
+on the saved board plane should still have Z near zero, within measurement
+uncertainty. A floor offset near -50 mm needs an independently measured board/
+floor relationship or a geometry diagnosis; it cannot be explained by sign
+convention alone. Do not subtract that offset, reverse signs, or rescale lengths
+to force agreement.
+
+For the November 3 ramp screenshot, the nearby points are **B and D**. Their
+cam0 observations differ by about 2.9 px, while cam1 differs by 16.6 px; they
+are not identical stereo correspondences. Their reconstructed Y changes by
+169.5 mm. A short baseline and mismatched rays can produce large coordinate
+changes; the latest session's actual NPZs/raw pairs/labels are needed to report
+the exact failing checks and distinguish click sensitivity from model errors.
+The screenshot's active baseline is 33.3311 mm, so older root files cannot be
+used as substitutes to reproduce these results.
+
 ## What changed
 
 - Both CLI and browser world fitting reject collinear or insufficient unique

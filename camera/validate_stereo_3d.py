@@ -99,6 +99,11 @@ from urllib.parse import quote
 import cv2
 import numpy as np
 
+if __package__:
+    from .reconstruction_diagnostics import describe_point_flags
+else:
+    from reconstruction_diagnostics import describe_point_flags
+
 try:  # Reuse the repository's verified acquisition settings when available.
     from charuco_common import open_camera
 except Exception:  # pragma: no cover - only relevant if run outside the repo
@@ -679,7 +684,11 @@ def board_up_direction(cal: Calibration, override: str = "auto") -> dict:
 
 def triangulate_point(pt0: list[float], pt1: list[float],
                       cal: Calibration) -> dict:
-    """Undistort, triangulate and diagnose one correspondence pair."""
+    """Undistort and diagnose a pair; positive camera depth, any board-Z sign.
+
+    Cheirality is checked in each camera frame. Board coordinates are obtained
+    afterward and their Z sign never determines this geometric validity flag.
+    """
     x0 = np.asarray(pt0, np.float64).reshape(1, 1, 2)
     x1 = np.asarray(pt1, np.float64).reshape(1, 1, 2)
     u0 = cv2.undistortPoints(x0, cal.K0, cal.D0).reshape(2)
@@ -3143,6 +3152,7 @@ LABEL_WEB_TEMPLATE = r"""<!doctype html>
             border-radius:9px; padding:10px; overflow-x:auto; }
   .points h2 { font-size:.95rem; margin:0 0 8px; }
   .points table { min-width:1050px; }
+  td.point-diagnostics { min-width:270px; white-space:pre-line; font-size:.76rem; }
   table { width:100%; border-collapse:collapse; font-size:.82rem; }
   th, td { text-align:left; padding:5px 6px; border-bottom:1px solid #2c2c2c;
            vertical-align:middle; }
@@ -3195,11 +3205,12 @@ LABEL_WEB_TEMPLATE = r"""<!doctype html>
   <div class="points">
     <h2>Correspondence points</h2>
     <table>
-      <thead><tr><th>Name</th><th>cam0 raw px</th><th>cam1 raw px</th><th>pixel x,y,z (px)</th><th>board X,Y,Z (mm)</th><th>valid</th><th>Actions</th></tr></thead>
-      <tbody id="pointRows"><tr><td colspan="7">no points yet</td></tr></tbody>
+      <thead><tr><th>Name</th><th>cam0 raw px</th><th>cam1 raw px</th><th>pixel x,y,z (px)</th><th>board X,Y,Z (mm)</th><th>valid</th><th>Geometry diagnostics</th><th>Actions</th></tr></thead>
+      <tbody id="pointRows"><tr><td colspan="8">no points yet</td></tr></tbody>
     </table>
     <div id="coords"></div>
-    <div id="geometryNote">Saved geometry: pixel x,y = cam0 raw px; pixel z = cam0.x − cam1.x (horizontal disparity, px, not metric depth). Board X,Y,Z = triangulated millimetres; recomputed when you save.</div>
+    <div id="geometryNote">Saved geometry: pixel x,y = cam0 raw px; pixel z = cam0.x − cam1.x (horizontal disparity, px, not metric depth). Board X,Y,Z = triangulated millimetres; recomputed when you save.
+Negative board Z is allowed. Positive depth is required in each CAMERA frame. Board Z=0 is the saved board plane; the +176 mm preview-origin shift does not change saved coordinates. Valid means geometric checks passed, not verified physical accuracy.</div>
   </div>
 </main>
 <script>
@@ -3274,7 +3285,8 @@ LABEL_WEB_TEMPLATE = r"""<!doctype html>
     "height_above_board_mm", "height_above_tank_floor_mm", "X_tank_mm",
     "X_tank_verified", "valid", "flags", "reproj_error_cam0_px",
     "reproj_error_cam1_px", "epipolar_sampson_px", "parallax_deg",
-    "depth_sensitivity_mm_per_px", "geometry_error"
+    "depth_sensitivity_mm_per_px", "geometry_error", "geometry_diagnostics",
+    "depth_z_cam0_mm", "depth_z_cam1_mm"
   ];
 
   function clearPointGeometry(point) {
@@ -3526,7 +3538,7 @@ LABEL_WEB_TEMPLATE = r"""<!doctype html>
     if (!state.points.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 7;
+      td.colSpan = 8;
       td.textContent = "no points yet";
       tr.appendChild(td);
       tbody.appendChild(tr);
@@ -3556,6 +3568,17 @@ LABEL_WEB_TEMPLATE = r"""<!doctype html>
       } else {
         validTd.textContent = "save to compute";
       }
+      const diagnosticsTd = document.createElement("td");
+      diagnosticsTd.className = "point-diagnostics";
+      const diagnosticLines = [...(point.geometry_diagnostics || [])];
+      if (point.valid !== undefined) {
+        if (!diagnosticLines.length && point.valid) diagnosticLines.push("Geometric checks passed; physical accuracy unverified.");
+        const metric = (value) => value == null ? "—" : Number(value).toFixed(3);
+        diagnosticLines.push("Camera depth Z0/Z1 (mm): " + metric(point.depth_z_cam0_mm) + " / " + metric(point.depth_z_cam1_mm));
+        diagnosticLines.push("Reprojection cam0/cam1 (px): " + metric(point.reproj_error_cam0_px) + " / " + metric(point.reproj_error_cam1_px));
+        diagnosticLines.push("Epipolar (px): " + metric(point.epipolar_sampson_px) + "; ray angle (deg): " + metric(point.parallax_deg));
+      }
+      diagnosticsTd.textContent = diagnosticLines.join("\n");
       const actions = document.createElement("td");
       for (const panel of [0, 1]) {
         const edit = document.createElement("button");
@@ -3574,6 +3597,7 @@ LABEL_WEB_TEMPLATE = r"""<!doctype html>
       tr.appendChild(pixelTd);
       tr.appendChild(boardTd);
       tr.appendChild(validTd);
+      tr.appendChild(diagnosticsTd);
       tr.appendChild(actions);
       if (state.edit && state.edit.id === point.id) tr.classList.add("editing");
       tbody.appendChild(tr);
@@ -5534,6 +5558,9 @@ LABEL_GEOMETRY_FIELDS = (
     "parallax_deg",
     "depth_sensitivity_mm_per_px",
     "geometry_error",
+    "geometry_diagnostics",
+    "depth_z_cam0_mm",
+    "depth_z_cam1_mm",
 )
 
 
@@ -5595,6 +5622,10 @@ def enrich_labeled_points(points: list[dict], cal: Calibration,
             item["valid"] = False
             item["flags"] = ["geometry_error"]
             item["geometry_error"] = str(exc)
+            item["geometry_diagnostics"] = describe_point_flags(
+                item, reprojection_limit_px=HIGH_REPROJ_PX,
+                epipolar_limit_px=HIGH_EPIPOLAR_PX,
+                rejected_parallax_deg=REJECT_PARALLAX_DEG)
             enriched.append(item)
             continue
 
@@ -5626,6 +5657,12 @@ def enrich_labeled_points(points: list[dict], cal: Calibration,
         item["X_tank_verified"] = bool(tank_verified and X_tank is not None)
         item["valid"] = bool(rec.get("valid", False))
         item["flags"] = list(rec.get("flags", []))
+        item["geometry_diagnostics"] = describe_point_flags(
+            rec, reprojection_limit_px=HIGH_REPROJ_PX,
+            epipolar_limit_px=HIGH_EPIPOLAR_PX,
+            rejected_parallax_deg=REJECT_PARALLAX_DEG)
+        item["depth_z_cam0_mm"] = _finite_scalar(rec.get("depth_z_cam0_mm"))
+        item["depth_z_cam1_mm"] = _finite_scalar(rec.get("depth_z_cam1_mm"))
         item["reproj_error_cam0_px"] = _finite_scalar(
             rec.get("reproj_error_cam0_px"))
         item["reproj_error_cam1_px"] = _finite_scalar(
