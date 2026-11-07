@@ -44,8 +44,17 @@ in the banner. This feature does not install a different calibration candidate.
    **Edit cam0/cam1** guides the edit from the unchanged opposite-camera click.
 4. Only for points on the saved **long-board plane**, enable **Assume saved
    board plane Z=0**. The cyan diamond predicts one pixel using the independent
-   saved world poses. Disable it for raised targets, a tilted small board, or
-   anything not on that plane. The plane is not automatically the tank floor.
+   saved world poses. Its readout includes the assumed board-plane X, Y and
+   Z↑=0. Use the guide on the printed face in its saved calibration position.
+
+The label table shows **Board X, Y, Z↑ (mm)**. X and Y follow the pattern and
+Z↑ is positive above the saved printed surface. A flat long board in its saved
+pose defines the zero reference over its entire face. Stereo measurements of
+that face should be near zero within measurement error. The guide's exact zero
+comes from the plane assumption. The table keeps the measured stereo height so
+you can see any deviation. If the board sits on the tank floor, set
+`board_thickness_mm` in the measurement plan to the measured thickness for
+the separate `height_above_tank_floor_mm` output.
 
 A single pixel supplies a viewing ray, not its depth. Its corresponding point
 can be anywhere along the epipolar curve; lens distortion makes this curve
@@ -457,7 +466,7 @@ python validate_stereo_3d.py label
 
 In the capture page, press **Capture Pair** for each stationary pose. The live
 previews show an orange crosshair at a preview origin plus 50 mm board axes:
-`+X` red, `+Y` green, `+Z` blue (currently downward). By default the preview
+`+X` red, `+Y` green, and upward `+Z` blue. By default the preview
 origin is shifted `+4` board rows (`+176 mm`) along `+Y`; use
 `--preview-origin-y-rows 0` to show the true pattern origin. This uses the
 saved board pose in `tank_alignment.npz`, is drawn only on the preview stream,
@@ -472,8 +481,8 @@ derived geometry for each point:
   `cam0.x - cam1.x` in pixels (not metric depth),
 * `X_cam0_mm` and `X_board_mm`: triangulated Camera-0 and big-board coordinates
   in millimetres,
-* height above the board, validity flags, reprojection/epipolar errors and
-  parallax.
+* `height_above_board_mm`, displayed as Z↑, plus validity flags,
+  reprojection/epipolar errors and parallax.
 
 The derived fields are recomputed on every save; the raw `cam0`/`cam1` pixels
 remain authoritative. Opening an older pair computes them for display, and
@@ -494,10 +503,10 @@ name (so a point `A` shared by repeated captures has one truth value) and are
 saved as position tests in `measurement_plan.json`; the page then computes the
 error vector and `|error|` live. The page also plots the board origin
 `(0,0,0)`, the `+X`, `+Y` and physical-up axes, predicted points, entered
-actuals and predicted-to-actual error lines on one equal-scale graph. Board
-`+Z` is physically downward, so use the height column for upward height. This
-page never edits the calibration files. The two C920s are not
-hardware-synchronized, so the target must not move during a capture.
+actuals and predicted-to-actual error lines on one equal-scale graph. Enter
+actuals in the saved pattern frame used by `truth_board_mm`. The separate Z↑
+column shows height above the printed board face. Keep the target stationary
+during a capture because the two C920s capture independently.
 
 ---
 

@@ -10,7 +10,7 @@ What it does
 1. Captures paired, full-resolution C920 frames in a browser (or headless
    ``--auto N``) and stores them under a validation session directory.  The
    live previews mark a preview origin (default: +4 board rows along +Y) and
-   its +X/+Y/+Z axes; the overlay is not written into the saved frames.
+   its +X/+Y and upward +Z axes; the overlay is not written into the saved frames.
 2. Lets you click the same physical reference points in both images in a
    browser, with per-camera zoom, panning and a pixel magnifier.
    Correspondences are saved as raw full-resolution pixel coordinates, with
@@ -822,19 +822,22 @@ def _project_camera_point_px(point: np.ndarray, K: np.ndarray,
 def project_board_frame_px(
         cal: Calibration,
         axis_length_mm: float = 50.0,
-        origin_board_mm: np.ndarray | None = None
+        origin_board_mm: np.ndarray | None = None,
+        *,
+        up_board: np.ndarray | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Project a board-frame origin and its +X/+Y/+Z axes into each camera.
+    """Project the board origin and axes into each camera's raw image.
 
     The world calibration stores ``X_cam = R_board_to_cam @ X_board +
-    t_board_to_cam``.  Returns raw distorted pixels because the live previews
-    are raw camera frames, not undistorted images.
+    t_board_to_cam``. Pass the inferred board-frame unit normal in
+    ``up_board`` to draw the physical height axis instead of the pattern Z axis.
     """
     length = float(axis_length_mm)
     if not np.isfinite(length) or length <= 0.0:
         length = 50.0
     board_origin = (np.zeros(3, np.float64) if origin_board_mm is None
                     else np.asarray(origin_board_mm, np.float64).reshape(3))
+    z_axis = (0.0, 0.0, 1.0) if up_board is None else up_board
     result: dict[str, dict[str, Any]] = {}
     cameras = (
         ("cam0", cal.K0, cal.D0, cal.R_board_to_cam0, cal.t_board_to_cam0),
@@ -846,7 +849,7 @@ def project_board_frame_px(
         axes: dict[str, list[float] | None] = {}
         for name, axis in (("X", (1.0, 0.0, 0.0)),
                            ("Y", (0.0, 1.0, 0.0)),
-                           ("Z", (0.0, 0.0, 1.0))):
+                           ("Z", z_axis)):
             endpoint = origin + R @ np.asarray(axis) * length
             axes[name] = _project_camera_point_px(endpoint, K, D)
         result[key] = {
@@ -859,7 +862,7 @@ def project_board_frame_px(
 def draw_board_axes(frame: np.ndarray, origin: list[float] | None,
                     axes: dict[str, list[float] | None] | None,
                     labels_only: bool = False) -> None:
-    """Draw the projected board +X/+Y/+Z axes and short labels in place."""
+    """Draw the supplied projected axes and short labels in place."""
     if origin is None or len(origin) != 2 or not axes:
         return
     try:
@@ -2827,8 +2830,8 @@ CAPTURE_WEB_TEMPLATE = r"""<!doctype html>
     <b>+Y</b> by <code>--preview-origin-y-rows</code> (default <b>+4 rows</b>,
     +176&nbsp;mm) from the true pattern origin; saved board coordinates still
     use <b>(0,0,0)</b>. The arrows are board <b>+X</b> (red), <b>+Y</b>
-    (green) and <b>+Z</b> (blue), drawn 50&nbsp;mm long; <b>+Z</b> points
-    physically downward. The overlay is preview-only, is not written into
+    (green) and upward <b>+Z</b> (blue), drawn 50&nbsp;mm long. The blue arrow
+    points away from the board toward the cameras for the floor setup. The overlay is preview-only, is not written into
     captured PNGs, and does not live-track a board that has been moved.
   </div>
   <div class="panels">
@@ -3067,8 +3070,10 @@ def cmd_capture(args: argparse.Namespace) -> int:
     origin_rows = float(args.preview_origin_y_rows)
     origin_y_mm = origin_rows * square_mm
     origin_board_mm = np.array([0.0, origin_y_mm, 0.0], np.float64)
+    plan = _session_label_plan(session)
+    up = board_up_direction(cal, plan.get("up_direction", "auto"))["up_board"]
     board_px = project_board_frame_px(
-        cal, origin_board_mm=origin_board_mm)
+        cal, origin_board_mm=origin_board_mm, up_board=np.asarray(up))
     if abs(origin_rows) < 1e-9:
         origin_label = "board origin (0,0,0)"
     else:
@@ -3217,12 +3222,12 @@ LABEL_WEB_TEMPLATE = r"""<!doctype html>
   <div class="points">
     <h2>Correspondence points</h2>
     <table>
-      <thead><tr><th>Name</th><th>cam0 raw px</th><th>cam1 raw px</th><th>pixel x,y,z (px)</th><th>board X,Y,Z (mm)</th><th>valid</th><th>Geometry diagnostics</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Name</th><th>cam0 raw px</th><th>cam1 raw px</th><th>pixel x,y,z (px)</th><th>Board X, Y, Z↑ (mm)</th><th>valid</th><th>Geometry diagnostics</th><th>Actions</th></tr></thead>
       <tbody id="pointRows"><tr><td colspan="8">no points yet</td></tr></tbody>
     </table>
     <div id="coords"></div>
-    <div id="geometryNote">Saved geometry: pixel x,y = cam0 raw px; pixel z = cam0.x − cam1.x (horizontal disparity, px, not metric depth). Board X,Y,Z = triangulated millimetres; recomputed when you save.
-Negative board Z is allowed. Positive depth is required in each CAMERA frame. Board Z=0 is the saved board plane; the +176 mm preview-origin shift does not change saved coordinates. Valid means geometric checks passed, not verified physical accuracy.</div>
+    <div id="geometryNote">Board X and Y follow the long-board pattern. Stereo Z↑ is signed height from its saved printed surface, with positive values above the board. The board-plane guide shows a separate Z↑=0 reference.
+Pixel z is horizontal disparity. Validity checks use camera depths and agreement between the observed pixels. The preview crosshair's +176 mm shift is for display.</div>
   </div>
 </main>
 <script>
@@ -3628,8 +3633,9 @@ Negative board Z is allowed. Positive depth is required in each CAMERA frame. Bo
     const lines = [state.guideAnchor.name + ": cam" + guide.source_camera +
       " → cam" + guide.target_camera + ". Yellow curve: depth unknown."];
     if (guide.board_plane) {
-      lines.push("Cyan diamond raw px: " + guide.board_plane.target_px.map(v => v.toFixed(2)).join(", ") +
-                 " (assumes saved world-board Z=0). It may disagree with the stereo curve.");
+      lines.push("Assumed board-plane X, Y, Z↑ (mm) = " +
+                 formatTriplet(guide.board_plane.board_xyz_mm, 3) +
+                 " · cyan diamond raw px = " + formatTriplet(guide.board_plane.target_px, 2));
     }
     const selected = state.points.find(point => point.name === state.guideAnchor.name);
     if (selected) {
@@ -3688,7 +3694,12 @@ Negative board Z is allowed. Positive depth is required in each CAMERA frame. Bo
       const pixelTd = document.createElement("td");
       pixelTd.textContent = formatTriplet(point.pixel_xyz, 2);
       const boardTd = document.createElement("td");
-      boardTd.textContent = formatTriplet(point.X_board_mm, 3);
+      boardTd.textContent = Array.isArray(point.X_board_mm) && point.height_above_board_mm != null
+        ? formatTriplet([point.X_board_mm[0], point.X_board_mm[1], point.height_above_board_mm], 3)
+        : "—";
+      if (Array.isArray(point.X_board_mm)) {
+        boardTd.title = "Saved pattern-frame X, Y, Z (mm) = " + formatTriplet(point.X_board_mm, 3);
+      }
       const validTd = document.createElement("td");
       if (point.valid === true) {
         validTd.textContent = "yes";
@@ -4228,8 +4239,8 @@ COMPARE_WEB_TEMPLATE = r"""<!doctype html>
 <main>
   <div class="note">
     Predictions are triangulated big-ChArUco-board coordinates in millimetres.
-    Enter measured actual board X/Y/Z in millimetres. Board +Z points physically
-    downward; use the height column for upward height. Actuals are keyed by
+    Enter actuals in the saved board pattern frame in millimetres. The Z↑ column
+    shows upward height above the printed board surface. Actuals are keyed by
     point name and shared by every pair containing that point. Saving writes
     position tests into <code>measurement_plan.json</code>; calibration files
     are never changed. Pixel-space z is horizontal disparity, not metric depth.
@@ -4568,9 +4579,9 @@ COMPARE_WEB_TEMPLATE = r"""<!doctype html>
       {label: "Point", key: "point"},
       {label: "Valid", render: (row) => row.valid
         ? pill("valid", "good") : pill("invalid", "bad")},
-      {label: "Predicted board X,Y,Z (mm)",
+      {label: "Predicted pattern X,Y,Z (mm)",
        render: (row) => vec(row.X_board_mm)},
-      {label: "Height (mm)", cls: "num",
+      {label: "Z↑ above board (mm)", cls: "num",
        render: (row) => fmt(row.height_above_board_mm)},
       {label: "Predicted pixel x,y,z (px)",
        render: (row) => vec(row.pixel_xyz, 2)},
@@ -5348,7 +5359,7 @@ RESULTS_WEB_TEMPLATE = r"""<!doctype html>
     const panel = $("panel-points");
     clear(panel);
     panel.append(sectionTitle("Triangulated points",
-      "Coordinates are millimetres. Board Z is not physical up; use height_above_board_mm for vertical height."));
+      "Z↑ is signed height above the saved printed board surface. The pattern coordinates use the calibration axes."));
     if (!DATA.points || !DATA.points.length) {
       panel.append(note("No reconstructed points."));
       return;
@@ -5359,8 +5370,8 @@ RESULTS_WEB_TEMPLATE = r"""<!doctype html>
       {label: "Valid", render: (row) => row.valid
           ? pill("valid", "good") : pill("invalid", "bad")},
       {label: "Pixel x,y,z (px)", render: (row) => vec(row.pixel_xyz, 2)},
-      {label: "Board X/Y/Z", render: (row) => vec(row.X_board_mm)},
-      {label: "Height above board", cls: "num",
+      {label: "Pattern X/Y/Z (mm)", render: (row) => vec(row.X_board_mm)},
+      {label: "Z↑ above board", cls: "num",
        render: (row) => fmt(row.height_above_board_mm) + " mm"},
       {label: "Camera-0 X/Y/Z", render: (row) => vec(row.X_cam0_mm)},
       {label: "Tank X/Y/Z", render: (row) => {
@@ -5844,6 +5855,9 @@ def enrich_labeled_points(points: list[dict], cal: Calibration,
         "three_d_convention": (
             "triangulated from raw cam0/cam1 pixels with the saved stereo "
             "calibration; Camera-0 and big-ChArUco-board coordinates."),
+        "label_z_convention": (
+            "Displayed Z-up is height_above_board_mm, the signed distance from "
+            "the saved board surface along up_board. X_board_mm uses pattern axes."),
         "up_board": up_info["up_board"],
         "board_thickness_mm": thickness,
         "tank_transform_verified": tank_verified,

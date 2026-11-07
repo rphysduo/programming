@@ -14,7 +14,8 @@ sys.path.insert(0, str(CAMERA_DIR))
 from reconstruction_diagnostics import describe_point_flags
 from validate_stereo_3d import (
     Calibration, HIGH_REPROJ_PX, HIGH_EPIPOLAR_PX, REJECT_PARALLAX_DEG,
-    board_to_cam0, create_label_web_app, enrich_labeled_points, triangulate_point,
+    board_to_cam0, board_up_direction, create_label_web_app, enrich_labeled_points,
+    project_board_frame_px, triangulate_point,
 )
 
 
@@ -49,10 +50,12 @@ def explain(point):
 @pytest.mark.parametrize("board_z", [-50., 0., 50.])
 def test_both_board_z_signs_and_plane_are_accepted(board_z):
     cal, point = synthetic_pair(board_z)
-    enriched, _ = enrich_labeled_points([point], cal, {})
+    enriched, _ = enrich_labeled_points([point], cal, {"board_thickness_mm": 8.})
     result = enriched[0]
     assert result["valid"]
     assert result["X_board_mm"] == pytest.approx([40., 176., board_z], abs=1e-8)
+    assert result["height_above_board_mm"] == pytest.approx(-board_z, abs=1e-8)
+    assert result["height_above_tank_floor_mm"] == pytest.approx(8. - board_z, abs=1e-8)
     assert result["depth_z_cam0_mm"] > 0 and result["depth_z_cam1_mm"] > 0
     assert result["flags"] == result["geometry_diagnostics"] == []
 
@@ -75,6 +78,25 @@ def test_negative_board_z_does_not_bypass_bad_correspondence_checks():
     assert any("Epipolar error" in reason and "2 px limit" in reason
                for reason in explain(result))
     assert any("reprojection error" in reason for reason in explain(result))
+
+
+def test_small_off_curve_click_can_pass():
+    cal, point = synthetic_pair(-50.)
+    point["cam1"][1] += 1.
+    result = triangulate_point(point["cam0"], point["cam1"], cal)
+    assert 0 < result["epipolar_sampson_px"] < HIGH_EPIPOLAR_PX
+    assert result["valid"]
+
+
+def test_capture_preview_z_points_toward_known_raised_point():
+    cal, raised = synthetic_pair(-50.)
+    origin = np.array([40., 176., 0.])
+    up = np.asarray(board_up_direction(cal)["up_board"])
+    preview = project_board_frame_px(cal, origin_board_mm=origin, up_board=up)
+    _, on_plane = synthetic_pair(0.)
+    for camera in ("cam0", "cam1"):
+        assert preview[camera]["origin"] == pytest.approx(on_plane[camera])
+        assert preview[camera]["axes"]["Z"] == pytest.approx(raised[camera])
 
 
 def test_api_recomputes_reasons_and_does_not_modify_saved_pixels(tmp_path):
@@ -105,7 +127,8 @@ def test_api_recomputes_reasons_and_does_not_modify_saved_pixels(tmp_path):
     assert persisted["depth_z_cam0_mm"] == result["depth_z_cam0_mm"]
     assert persisted["cam0"] == point["cam0"] and persisted["cam1"] == point["cam1"]
     page = client.get("/").get_data(as_text=True)
-    assert "Negative board Z is allowed" in page and "Geometry diagnostics" in page
+    assert "Board X, Y, Z↑ (mm)" in page and "Geometry diagnostics" in page
+    assert "Assumed board-plane X, Y, Z↑ (mm)" in page
     assert "diagnosticsTd.textContent" in page
 
 
