@@ -101,8 +101,10 @@ import numpy as np
 
 if __package__:
     from .reconstruction_diagnostics import describe_point_flags
+    from .correspondence_guide import predict_correspondence
 else:
     from reconstruction_diagnostics import describe_point_flags
+    from correspondence_guide import predict_correspondence
 
 try:  # Reuse the repository's verified acquisition settings when available.
     from charuco_common import open_camera
@@ -3162,6 +3164,9 @@ LABEL_WEB_TEMPLATE = r"""<!doctype html>
   #coords, #geometryNote { color:#999; font-size:.8rem; margin-top:8px;
                            white-space:pre-wrap; }
   #geometryNote { color:#9ad; }
+  #guideInfo { color:#ffef4d; margin-top:8px; font-size:.84rem; white-space:pre-wrap;
+               height:5.2em; line-height:1.3; overflow:auto; }
+  .guide-controls { margin-top:8px; }
 </style>
 </head>
 <body>
@@ -3181,6 +3186,13 @@ LABEL_WEB_TEMPLATE = r"""<!doctype html>
   </div>
   <div id="warning">C920s are not synchronized; the reference object must stay still.</div>
   __CALIBRATION_BANNER__
+  <div class="toolbar guide-controls">
+    <label><input type="checkbox" id="guideEnabled" checked> Show epipolar guide</label>
+    <label><input type="checkbox" id="boardPlane"> Assume saved board plane Z=0 (cyan diamond)</label>
+    <button id="hideGuide">Clear guide</button>
+  </div>
+  <div class="hint">Yellow curve = possible matches under the active stereo calibration; depth is unknown. Cyan diamond = independent world-pose prediction ONLY for board-plane points. Click the actual feature; selecting the curve alone can hide calibration error.</div>
+  <div id="guideInfo" role="status">Click either camera to guide the other. Saved points also have Guide buttons.</div>
   <div id="message"></div>
 </header>
 <main>
@@ -3248,6 +3260,10 @@ Negative board Z is allowed. Positive depth is required in each CAMERA frame. Bo
     token: 0,
     drag: null,
     clickStart: null,
+    guide: null,
+    guideAnchor: null,
+    guideToken: 0,
+    guideText: "",
   };
   const palette = ["#4fd16f", "#4db8ff", "#ffb84d", "#e879ff", "#fff06a",
                    "#57e6df", "#ff8d57", "#a5ffb0"];
@@ -3453,6 +3469,8 @@ Negative board Z is allowed. Positive depth is required in each CAMERA frame. Bo
     ctx.drawImage(image,
                   raw[0] - sourceW / 2, raw[1] - sourceH / 2,
                   sourceW, sourceH, 0, 0, mw, mh);
+    drawGuide(ctx, {scale: zoom, offsetX: mw / 2 - raw[0] * zoom,
+                   offsetY: mh / 2 - raw[1] * zoom}, panel);
     ctx.strokeStyle = "#00ffff";
     ctx.lineWidth = 1;
     ctx.beginPath();
@@ -3481,6 +3499,7 @@ Negative board Z is allowed. Positive depth is required in each CAMERA frame. Bo
       ctx.drawImage(image, view.offsetX, view.offsetY,
                     image.naturalWidth * view.scale,
                     image.naturalHeight * view.scale);
+      drawGuide(ctx, view, panel);
       state.points.forEach((point, index) => drawPoint(ctx, view, point, index, panel));
       if (state.pending && state.pending.panel === panel) {
         const [x, y] = rawToScreen(view, state.pending.xy);
@@ -3512,6 +3531,119 @@ Negative board Z is allowed. Positive depth is required in each CAMERA frame. Bo
     }
     updateMeta();
     updateCoords();
+    updateGuideInfo();
+  }
+
+  function clearGuide() {
+    state.guideToken += 1;
+    state.guide = null;
+    state.guideAnchor = null;
+    state.guideText = "";
+    draw();
+  }
+
+  async function requestGuide(panel, raw, name) {
+    const token = ++state.guideToken;
+    state.guideAnchor = {panel: panel, xy: [...raw], name: name || "selected point"};
+    state.guide = null;
+    state.guideText = "";
+    if (!$("guideEnabled").checked || !state.pair) { draw(); return; }
+    state.guideText = "Computing guide…";
+    draw();
+    try {
+      const data = await api("/api/pair/" + encodeURIComponent(state.pair) + "/guide", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({source_camera: panel, source_px: raw,
+                              board_plane: $("boardPlane").checked}),
+      });
+      if (token !== state.guideToken) return;
+      state.guide = data;
+      state.guideText = "";
+      draw();
+    } catch (error) {
+      if (token !== state.guideToken) return;
+      state.guideText = "Guide unavailable: " + error.message;
+      draw();
+    }
+  }
+
+  function drawGuide(ctx, view, panel) {
+    const guide = state.guide;
+    if (!guide || !$("guideEnabled").checked) return;
+    ctx.save();
+    // Clip to the actual image: zoom and pan must not extend overlays into margins.
+    const image = state.images[panel];
+    ctx.beginPath();
+    ctx.rect(view.offsetX, view.offsetY, image.naturalWidth * view.scale,
+             image.naturalHeight * view.scale);
+    ctx.clip();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#ffef4d";
+    if (panel === guide.source_camera) {
+      const [x, y] = rawToScreen(view, guide.source_px);
+      ctx.beginPath(); ctx.arc(x, y, 15, 0, Math.PI * 2); ctx.stroke();
+    } else {
+      for (const segment of guide.curve_segments_px) {
+        ctx.beginPath();
+        segment.forEach((raw, index) => {
+          const [x, y] = rawToScreen(view, raw);
+          if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      }
+      if (guide.board_plane && guide.board_plane.inside_target_image) {
+        const [x, y] = rawToScreen(view, guide.board_plane.target_px);
+        ctx.strokeStyle = "#57e6df";
+        ctx.beginPath();
+        ctx.moveTo(x, y - 10); ctx.lineTo(x + 10, y);
+        ctx.lineTo(x, y + 10); ctx.lineTo(x - 10, y); ctx.closePath(); ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  function distanceToGuide(raw, segments) {
+    let best = Infinity;
+    for (const segment of segments) {
+      for (let i = 1; i < segment.length; i += 1) {
+        const a = segment[i - 1], b = segment[i];
+        const dx = b[0] - a[0], dy = b[1] - a[1];
+        const norm = dx * dx + dy * dy;
+        const t = norm ? Math.max(0, Math.min(1,
+          ((raw[0] - a[0]) * dx + (raw[1] - a[1]) * dy) / norm)) : 0;
+        best = Math.min(best, Math.hypot(raw[0] - a[0] - t * dx,
+                                       raw[1] - a[1] - t * dy));
+      }
+    }
+    return best;
+  }
+
+  function updateGuideInfo() {
+    const guide = state.guide;
+    if (state.guideText) { $("guideInfo").textContent = state.guideText; return; }
+    if (!guide || !$("guideEnabled").checked) {
+      $("guideInfo").textContent = "Click either camera to guide the other. Saved points also have Guide buttons.";
+      return;
+    }
+    const lines = [state.guideAnchor.name + ": cam" + guide.source_camera +
+      " → cam" + guide.target_camera + ". Yellow curve: depth unknown."];
+    if (guide.board_plane) {
+      lines.push("Cyan diamond raw px: " + guide.board_plane.target_px.map(v => v.toFixed(2)).join(", ") +
+                 " (assumes saved world-board Z=0). It may disagree with the stereo curve.");
+    }
+    const selected = state.points.find(point => point.name === state.guideAnchor.name);
+    if (selected) {
+      const distance = distanceToGuide(selected["cam" + guide.target_camera], guide.curve_segments_px);
+      if (Number.isFinite(distance)) lines.push("Observed point → curve: " + distance.toFixed(2) + " raw px.");
+    }
+    const cursor = state.cursor[guide.target_camera];
+    if (cursor && insideImage(guide.target_camera, cursor)) {
+      const distance = distanceToGuide(cursor, guide.curve_segments_px);
+      if (Number.isFinite(distance)) lines.push("Cursor → curve: " + distance.toFixed(2) +
+        " raw px (display distance; different from the table's Sampson error).");
+    }
+    lines.push(...guide.warnings);
+    $("guideInfo").textContent = lines.join("\n");
   }
 
   function updateCoords() {
@@ -3585,6 +3717,16 @@ Negative board Z is allowed. Positive depth is required in each CAMERA frame. Bo
         edit.textContent = "Edit cam" + panel;
         edit.addEventListener("click", () => startEdit(point, panel));
         actions.appendChild(edit);
+        const guide = document.createElement("button");
+        guide.textContent = "Guide " + panel + "→" + (1 - panel);
+        guide.addEventListener("click", () => {
+          if (state.pending || state.edit) {
+            setMessage("Finish or cancel the pending point/edit before inspecting another point.", true);
+            return;
+          }
+          requestGuide(panel, point["cam" + panel], point.name);
+        });
+        actions.appendChild(guide);
       }
       const del = document.createElement("button");
       del.className = "danger";
@@ -3609,6 +3751,7 @@ Negative board Z is allowed. Positive depth is required in each CAMERA frame. Bo
     state.pending = null;
     state.edit = {id: point.id, panel: panel};
     state.active = panel;
+    requestGuide(1 - panel, point["cam" + (1 - panel)], point.name);
     setMessage("Click cam" + panel + " to move point " + point.name + ".");
     updatePointTable();
     draw();
@@ -3616,6 +3759,7 @@ Negative board Z is allowed. Positive depth is required in each CAMERA frame. Bo
 
   async function deletePoint(point) {
     if (!window.confirm("Delete point " + point.name + "?")) return;
+    clearGuide();
     state.points = state.points.filter((p) => p.id !== point.id);
     if (state.edit && state.edit.id === point.id) state.edit = null;
     state.dirty = true;
@@ -3650,6 +3794,7 @@ Negative board Z is allowed. Positive depth is required in each CAMERA frame. Bo
     if (state.pending) {
       if (state.pending.panel === panel) {
         state.pending.xy = [raw[0], raw[1]];
+        requestGuide(panel, raw, "pending");
         setMessage("Moved pending point in cam" + panel +
                    ". Click the same point in the other camera.");
         updateSaveState();
@@ -3665,6 +3810,7 @@ Negative board Z is allowed. Positive depth is required in each CAMERA frame. Bo
         cam1: [cam1[0], cam1[1]],
       };
       state.points.push(point);
+      if (state.guideAnchor) state.guideAnchor.name = point.name;
       state.pending = null;
       state.dirty = true;
       setMessage("Added " + point.name + ". Save to compute its pixel and 3-D coordinates.");
@@ -3673,6 +3819,7 @@ Negative board Z is allowed. Positive depth is required in each CAMERA frame. Bo
       return;
     }
     state.pending = {panel: panel, xy: [raw[0], raw[1]]};
+    requestGuide(panel, raw, "pending");
     setMessage("First point set in cam" + panel +
                ". Click the same physical point in the other camera.");
     updateSaveState();
@@ -3713,6 +3860,7 @@ Negative board Z is allowed. Positive depth is required in each CAMERA frame. Bo
   }
 
   async function loadPair(name) {
+    clearGuide();
     const token = ++state.token;
     const previous = state.pair;
     setMessage("Loading " + name + "...");
@@ -3880,6 +4028,14 @@ Negative board Z is allowed. Positive depth is required in each CAMERA frame. Bo
   });
 
   $("saveButton").addEventListener("click", () => savePair());
+  $("hideGuide").addEventListener("click", clearGuide);
+  for (const id of ["guideEnabled", "boardPlane"]) {
+    $(id).addEventListener("change", () => {
+      const anchor = state.guideAnchor;
+      if (anchor) requestGuide(anchor.panel, anchor.xy, anchor.name);
+      else clearGuide();
+    });
+  }
   $("prevButton").addEventListener("click", () => navigate(-1));
   $("nextButton").addEventListener("click", () => navigate(1));
   $("fitButton").addEventListener("click", fitAll);
@@ -3892,6 +4048,7 @@ Negative board Z is allowed. Positive depth is required in each CAMERA frame. Bo
   $("deleteLastButton").addEventListener("click", () => {
     if (!state.points.length) { setMessage("No points to delete."); return; }
     const point = state.points.pop();
+    clearGuide();
     if (state.edit && state.edit.id === point.id) state.edit = null;
     state.dirty = true;
     setMessage("Deleted last point " + point.name + ".");
@@ -3899,6 +4056,7 @@ Negative board Z is allowed. Positive depth is required in each CAMERA frame. Bo
     draw();
   });
   $("cancelButton").addEventListener("click", () => {
+    clearGuide();
     state.pending = null;
     state.edit = null;
     setMessage("Cancelled pending point/edit.");
@@ -3922,6 +4080,7 @@ Negative board Z is allowed. Positive depth is required in each CAMERA frame. Bo
     else if (event.key === "n") { event.preventDefault(); navigate(1); }
     else if (event.key === "p") { event.preventDefault(); navigate(-1); }
     else if (event.key === "Escape") {
+      clearGuide();
       state.pending = null;
       state.edit = null;
       setMessage("Cancelled pending point/edit.");
@@ -6161,6 +6320,10 @@ def create_label_web_app(session: Path, cal: Calibration, pairs: list[Path],
     """Create the browser correspondence labeler for saved pairs."""
     from flask import Flask, jsonify, request, send_file
 
+    # Flask resolves relative send_file paths against its module directory.
+    # Resolve once against the caller's working directory, like image loading.
+    session = session.resolve()
+    pairs = [pair.resolve() for pair in pairs]
     app = Flask(__name__)
     by_name = {pair.name: pair for pair in pairs}
     canvas_width = int(display_width) if display_width and display_width > 0 else 900
@@ -6284,6 +6447,28 @@ def create_label_web_app(session: Path, cal: Calibration, pairs: list[Path],
         response = send_file(path, mimetype="image/png")
         response.headers["Cache-Control"] = "no-store"
         return response
+
+    @app.route("/api/pair/<name>/guide", methods=["POST"])
+    def correspondence_guide_api(name):
+        pair_dir = by_name.get(name)
+        if pair_dir is None:
+            return jsonify({"error": f"unknown pair {name!r}"}), 404
+        sizes = _pair_image_sizes(pair_dir)
+        if sizes is None:
+            return jsonify({"error": "could not read pair images"}), 404
+        if sizes != (cal.size0, cal.size1):
+            return jsonify({"error": "image sizes differ from calibration; "
+                                     "raw-pixel guide would be misleading"}), 400
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict):
+            return jsonify({"error": "request needs source_camera and source_px"}), 400
+        try:
+            guide = predict_correspondence(
+                cal, body.get("source_camera"), body.get("source_px"),
+                board_plane=body.get("board_plane", False))
+        except (ValueError, TypeError, cv2.error) as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify(guide)
 
     @app.route("/api/pair/<name>/save", methods=["POST"])
     def save_pair(name):

@@ -21,6 +21,67 @@ can consume.
 
 ---
 
+## Cross-camera point guide (saved stereo pairs)
+
+Start the updated labeler from `~/programming/camera`, using your existing
+camera Python environment; no Node.js or camera hardware is required:
+
+```bash
+python validate_stereo_3d.py label --session ../outputs/small_board_check01 --port 5003
+```
+
+Open `http://JETSON_IP:5003` on your laptop (or `http://localhost:5003` on the
+same computer). Substitute your actual capture-session folder when needed.
+The existing session's calibration snapshots remain active; check their hashes
+in the banner. This feature does not install a different calibration candidate.
+
+1. Click a recognizable physical feature in **either** camera. A yellow curve
+   appears in the other view, with a yellow ring around the source click.
+2. Zoom with the wheel and inspect the magnifier. Hover near the actual feature
+   to see its distance from the curve in original raw pixels. Click the same
+   physical feature to complete the pair, then **Save** for the usual errors.
+3. For existing points, **Guide 0→1** or **Guide 1→0** displays that prediction;
+   **Edit cam0/cam1** guides the edit from the unchanged opposite-camera click.
+4. Only for points on the saved **long-board plane**, enable **Assume saved
+   board plane Z=0**. The cyan diamond predicts one pixel using the independent
+   saved world poses. Disable it for raised targets, a tilted small board, or
+   anything not on that plane. The plane is not automatically the tank floor.
+
+A single pixel supplies a viewing ray, not its depth. Its corresponding point
+can be anywhere along the epipolar curve; lens distortion makes this curve
+non-straight in raw images. The optional diamond adds an explicit plane
+assumption. It can disagree with the stereo curve when world and stereo poses
+are inconsistent. Both remain visible; neither is a measured correspondence.
+
+**Use the actual feature as the truth.** Clicking an arbitrary location on the
+curve can reduce epipolar/reprojection error without improving 3-D accuracy.
+For an unbiased calibration check, hide the guide, label identifiable ChArUco
+corners independently, then show it to inspect their residuals. A systematic
+offset across known matching corners still points to a geometry problem.
+
+All clicks remain raw full-resolution pixels; no snapping, automatic second
+click, height clamp, rescaling or validity-threshold changes occur. Guide
+requests are read-only, and image-size mismatches are rejected. The cursor's
+distance is an approximate shortest distance to the displayed raw-pixel curve;
+it is different from the table's Sampson error in ideal undistorted pixels.
+Zoom/pan affect display only. The `+176 mm` preview origin does not enter this
+calculation. **Clear guide**, Cancel, Escape or changing pairs clears overlays.
+
+Implementation uses `X1 = R @ X0 + T`, `E = [T]x R`, and undistorts the source
+pixel before computing `E ray0` or `E.T ray1`; it then reapplies target lens
+distortion for display. The plane marker reuses the diagnostic's shared ray/
+plane math. See [OpenCV camera geometry](https://docs.opencv.org/4.12.0/d9/d0c/group__calib3d.html).
+
+Read-only API: `POST /api/pair/PAIR_NAME/guide`, JSON
+`{"source_camera": 0, "source_px": [985.28, 522.36], "board_plane": false}`.
+The response contains raw-pixel curve segments, optional board-plane prediction,
+and warnings. Run focused regressions with
+`python -m pytest camera/tests/test_correspondence_guide.py` from the repository
+root, and the hardware-free CLI example with
+`python camera/validate_stereo_3d.py selftest`.
+
+---
+
 ## 1. The physical setup
 
 | Thing | Value | Where it is defined |
