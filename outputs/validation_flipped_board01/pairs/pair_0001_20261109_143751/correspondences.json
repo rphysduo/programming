@@ -1,0 +1,242 @@
+{
+  "pair_id": "pair_0001_20261109_143751",
+  "image_size": [
+    1920,
+    1080
+  ],
+  "image_sizes": {
+    "cam0": [
+      1920,
+      1080
+    ],
+    "cam1": [
+      1920,
+      1080
+    ]
+  },
+  "updated_iso": "2026-11-09T14:51:00-05:00",
+  "coordinate_convention": "raw full-resolution pixel coordinates, origin top-left, x right, y down",
+  "label_geometry": {
+    "calculated_iso": "2026-11-09T14:51:00-05:00",
+    "pixel_units": "px",
+    "three_d_units": "mm",
+    "pixel_xyz_order": [
+      "x",
+      "y",
+      "z"
+    ],
+    "pixel_xyz_convention": "x,y = cam0 raw pixel coordinates; z = cam0.x - cam1.x (horizontal disparity in pixels). z is not metric depth.",
+    "three_d_convention": "triangulated from raw cam0/cam1 pixels with the saved stereo calibration; Camera-0 and big-ChArUco-board coordinates.",
+    "label_z_convention": "Displayed Z-up is height_above_board_mm, the signed distance from the saved board surface along up_board. X_board_mm uses pattern axes.",
+    "up_board": [
+      -0.0,
+      -0.0,
+      -1.0
+    ],
+    "board_thickness_mm": null,
+    "tank_transform_verified": false,
+    "calibration_sha256": {
+      "cam0_intrinsics.npz": "529adac7fd421b70ee4c4e8abc5b853d1395512ddfa12d6adac3bd79c25e8992",
+      "cam1_intrinsics.npz": "e4736c561d61e1622a163b5e7912f92fc10468f8e4f3fce5c5d82c78b8e5766b",
+      "stereo_params.npz": "48f454ae09efceebd80d1b76dfe350ad73fd4df6bc880100d437bdef5fa5fb77",
+      "tank_alignment.npz": "30d50eeda1bb88ced435f42b7a742ba2e24336729c1c79c4820b67ab38325ef0"
+    },
+    "note": "Derived geometry is recomputed on every label save and by measure; the raw cam0/cam1 pixels remain authoritative."
+  },
+  "points": [
+    {
+      "cam0": [
+        583.7102818130486,
+        557.462932450824
+      ],
+      "cam1": [
+        1311.3423335557725,
+        831.880641786724
+      ],
+      "id": 0,
+      "name": "A",
+      "pixel_xyz": [
+        583.7102818130486,
+        557.462932450824,
+        -727.6320517427239
+      ],
+      "X_cam0_mm": [
+        -166.34383389885585,
+        12.90012083757194,
+        652.1327363560926
+      ],
+      "X_cam1_mm": [
+        139.05174849738043,
+        122.82738362930786,
+        649.1815410915419
+      ],
+      "X_board_mm": [
+        1.3861031115207516,
+        477.8196449152917,
+        -197.9965724744303
+      ],
+      "height_above_board_mm": 197.9965724744303,
+      "height_above_tank_floor_mm": null,
+      "X_tank_mm": null,
+      "X_tank_verified": false,
+      "valid": true,
+      "flags": [],
+      "geometry_diagnostics": [],
+      "depth_z_cam0_mm": 652.1327363560926,
+      "depth_z_cam1_mm": 649.1815410915419,
+      "reproj_error_cam0_px": 1.2779139258915548,
+      "reproj_error_cam1_px": 1.2942755489556905,
+      "epipolar_sampson_px": 1.7998379815127865,
+      "parallax_deg": 8.785792375510933,
+      "depth_sensitivity_mm_per_px": 2.929787148727403
+    },
+    {
+      "cam0": [
+        606.5787177249628,
+        938.6333012512032
+      ],
+      "cam1": [
+        1388.2634361685743,
+        475.03368623676613
+      ],
+      "id": 1,
+      "name": "B",
+      "pixel_xyz": [
+        606.5787177249628,
+        938.6333012512032,
+        -781.6847184436116
+      ],
+      "X_cam0_mm": [
+        -147.90755569129604,
+        180.5851864142299,
+        620.8318477020582
+      ],
+      "X_cam1_mm": [
+        179.9528528985915,
+        -42.959470445268366,
+        665.9070269422814
+      ],
+      "X_board_mm": [
+        172.86383873713146,
+        483.5852641860722,
+        -198.25545712912424
+      ],
+      "height_above_board_mm": 198.25545712912424,
+      "height_above_tank_floor_mm": null,
+      "X_tank_mm": null,
+      "X_tank_verified": false,
+      "valid": false,
+      "flags": [
+        "high_epipolar"
+      ],
+      "geometry_diagnostics": [
+        "Epipolar error 2.891 px > 2 px limit."
+      ],
+      "depth_z_cam0_mm": 620.8318477020582,
+      "depth_z_cam1_mm": 665.9070269422814,
+      "reproj_error_cam0_px": 2.128656064951793,
+      "reproj_error_cam1_px": 1.9988337195739818,
+      "epipolar_sampson_px": 2.8907183704679187,
+      "parallax_deg": 8.434395520609819,
+      "depth_sensitivity_mm_per_px": 2.655290494929454
+    },
+    {
+      "cam0": [
+        885.1578461064627,
+        890.818094321463
+      ],
+      "cam1": [
+        1113.8422052256044,
+        462.56015399422523
+      ],
+      "id": 2,
+      "name": "C",
+      "pixel_xyz": [
+        885.1578461064627,
+        890.818094321463,
+        -228.68435911914173
+      ],
+      "X_cam0_mm": [
+        -30.300253981709698,
+        197.52756343755576,
+        769.160046921188
+      ],
+      "X_cam1_mm": [
+        61.90741417992737,
+        -59.35733239584439,
+        813.9481048881272
+      ],
+      "X_board_mm": [
+        174.91205163395236,
+        494.7394969437142,
+        -8.54208344735744
+      ],
+      "height_above_board_mm": 8.54208344735744,
+      "height_above_tank_floor_mm": null,
+      "X_tank_mm": null,
+      "X_tank_verified": false,
+      "valid": false,
+      "flags": [
+        "high_reproj_cam0",
+        "high_epipolar"
+      ],
+      "geometry_diagnostics": [
+        "Cam0 reprojection error 3.150 px > 3 px limit.",
+        "Epipolar error 4.303 px > 2 px limit."
+      ],
+      "depth_z_cam0_mm": 769.160046921188,
+      "depth_z_cam1_mm": 813.9481048881272,
+      "reproj_error_cam0_px": 3.14975232501448,
+      "reproj_error_cam1_px": 2.9576193405797486,
+      "epipolar_sampson_px": 4.3029489932667,
+      "parallax_deg": 7.152644699286644,
+      "depth_sensitivity_mm_per_px": 4.075655808422675
+    },
+    {
+      "id": 3,
+      "name": "D",
+      "cam0": [
+        851.8946665982235,
+        574.094308774212
+      ],
+      "cam1": [
+        1051.4737436476566,
+        754.9605262910551
+      ],
+      "pixel_xyz": [
+        851.8946665982235,
+        574.094308774212,
+        -199.57907704943318
+      ],
+      "X_cam0_mm": [
+        -49.973525129628946,
+        24.44390143961308,
+        772.0342580921186
+      ],
+      "X_cam1_mm": [
+        22.90298674175108,
+        104.22143469721979,
+        768.4080748632598
+      ],
+      "X_board_mm": [
+        3.794354151466906,
+        470.6191091686355,
+        -30.682391485078018
+      ],
+      "height_above_board_mm": 30.682391485078018,
+      "height_above_tank_floor_mm": null,
+      "X_tank_mm": null,
+      "X_tank_verified": false,
+      "valid": true,
+      "flags": [],
+      "geometry_diagnostics": [],
+      "depth_z_cam0_mm": 772.0342580921186,
+      "depth_z_cam1_mm": 768.4080748632598,
+      "reproj_error_cam0_px": 0.9339371470717881,
+      "reproj_error_cam1_px": 0.9363972895963256,
+      "epipolar_sampson_px": 1.3171209187744575,
+      "parallax_deg": 7.642590630813875,
+      "depth_sensitivity_mm_per_px": 4.106172688741527
+    }
+  ]
+}
