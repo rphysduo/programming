@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import record_stereo_waves as recorder
 from validate_stereo_3d import create_label_web_app, list_pair_dirs, read_json
+from wave_recording_web import WaveRecorder, create_app
 
 
 @pytest.fixture
@@ -93,3 +94,51 @@ def test_record_export_and_open_in_labeler(tmp_path, calib_dir, monkeypatch):
         writer.writerows(rows)
     assert recorder.main(["export", "--session", str(session), "--at", "0"]) == 1
     assert list_pair_dirs(session) == pairs
+
+
+def test_browser_can_preview_record_stop_and_start_another_trial(tmp_path, calib_dir):
+    sources = {name: calib_dir / name for name in recorder.CALIB_NAMES}
+    cal = recorder.load_calibration(sources)
+    with WaveRecorder(tmp_path / "trials", sources, cal,
+                      [FakeCamera(40), FakeCamera(150)], (cal.size0, cal.size1),
+                      (30, 30), {}) as live:
+        client = create_app(live).test_client()
+        deadline = time.monotonic() + 3
+        while not client.get("/status").get_json()["ready"] and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert client.get("/status").get_json()["ready"]
+
+        def check_preview(camera, value):
+            with client.get(f"/video/{camera}", buffered=False) as response:
+                assert response.mimetype == "multipart/x-mixed-replace"
+                chunk = next(iter(response.response))
+                jpeg = chunk.split(b"\r\n\r\n", 1)[1][:-2]
+                image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+                assert image.mean() == pytest.approx(value, abs=2)
+
+        check_preview("cam0", 40)
+        check_preview("cam1", 150)
+
+        sessions = []
+        for _ in range(2):
+            started = client.post("/recording/start", json={})
+            assert started.status_code == 200
+            session = Path(started.get_json()["session"])
+            assert client.post("/recording/start", json={}).status_code == 409
+            assert client.get("/status").get_json()["active"] == str(session)
+            assert not (session / "video/recording.json").exists()
+            check_preview("cam1", 150)
+            time.sleep(0.15)
+            stopped = client.post("/recording/stop", json={})
+            assert stopped.status_code == 200
+            status = client.get("/status").get_json()
+            assert status["ready"] and status["active"] is None
+            assert status["last"] == stopped.get_json()
+            check_preview("cam0", 40)
+            sessions.append(session)
+
+        assert sessions[0] != sessions[1]
+        for session in sessions:
+            assert recorder.main(["export", "--session", str(session), "--at", "0",
+                                  "--max-gap-ms", "50"]) == 0
+            assert len(list_pair_dirs(session)) == 1

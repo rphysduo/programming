@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from bisect import bisect_left
 from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
-from contextlib import ExitStack, closing
+from contextlib import ExitStack, closing, contextmanager
 import csv
 import math
 from pathlib import Path
@@ -50,57 +50,68 @@ def _check_frame(frame, size, camera):
         raise ValueError(f"{camera} frame shape {frame.shape} differs from calibrated size {size}")
 
 
-def _record_camera(cap, video_dir, camera, size, fps, start, start_unix, end, stop):
-    """Write one camera stream with one timestamp row per encoded frame."""
-    path = video_dir / f"{camera}.avi"
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), fps, size)
-    count = 0
-    first = last = None
-    try:
-        if not writer.isOpened():
+class _RecordingStream:
+    """Write frames and timestamps in the same order for both capture modes."""
+
+    def __init__(self, resources, video_dir, camera, size, fps):
+        self.camera = camera
+        self.size = size
+        self.fps = fps
+        self.count = 0
+        self.first = self.last = None
+        path = video_dir / f"{camera}.avi"
+        self.writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), fps, size)
+        resources.callback(self.writer.release)
+        if not self.writer.isOpened():
             raise RuntimeError(f"Could not open the Motion JPEG writer for {path}")
-        with (video_dir / f"{camera}_frames.csv").open("x", newline="", encoding="utf-8") as log:
-            rows = csv.writer(log)
-            rows.writerow(TIMESTAMP_COLUMNS)
-            while not stop.is_set():
-                ok, frame = cap.read()
-                now = time.monotonic_ns()
-                if not ok:
-                    raise RuntimeError(f"{camera} stopped delivering frames")
-                if now >= end or stop.is_set():
-                    break
-                if now < start:
-                    continue  # Drain buffered frames while the two cameras warm up.
-                _check_frame(frame, size, camera)
-                writer.write(frame)
-                rows.writerow((count, now - start, start_unix + now - start))
-                if first is None:
-                    first = now
-                last = now
-                count += 1
-    finally:
-        writer.release()
-    if count == 0:
-        raise RuntimeError(f"{camera} recorded zero frames. Start a new session and try again.")
-    observed = (count - 1) * NS_PER_SECOND / (last - first) if count > 1 else None
-    return {"frames": count, "video_header_fps": fps, "observed_fps": observed}
+        log = resources.enter_context((video_dir / f"{camera}_frames.csv").open(
+            "x", newline="", encoding="utf-8"))
+        self.rows = csv.writer(log)
+        self.rows.writerow(TIMESTAMP_COLUMNS)
+
+    def write(self, frame, now, start, start_unix):
+        _check_frame(frame, self.size, self.camera)
+        self.writer.write(frame)
+        self.rows.writerow((self.count, now - start, start_unix + now - start))
+        if self.first is None:
+            self.first = now
+        self.last = now
+        self.count += 1
+
+    def summary(self):
+        if not self.count:
+            raise RuntimeError(f"{self.camera} recorded zero frames. Start a new recording and try again.")
+        observed = None
+        if self.count > 1 and self.last > self.first:
+            observed = (self.count - 1) * NS_PER_SECOND / (self.last - self.first)
+        return {"frames": self.count, "video_header_fps": self.fps, "observed_fps": observed}
 
 
-def record(args):
-    """Capture two videos and preserve the calibration and acquisition metadata."""
+def _record_camera(cap, video_dir, camera, size, fps, start, start_unix, end, stop):
+    """Drain warm-up frames and write frames in the timed capture interval."""
+    with ExitStack() as resources:
+        stream = _RecordingStream(resources, video_dir, camera, size, fps)
+        while not stop.is_set():
+            ok, frame = cap.read()
+            now = time.monotonic_ns()
+            if not ok:
+                raise RuntimeError(f"{camera} stopped delivering frames")
+            if now >= end or stop.is_set():
+                break
+            if now >= start:
+                stream.write(frame, now, start, start_unix)
+    return stream.summary()
+
+
+@contextmanager
+def _open_recording_cameras(args, cal):
+    """Open both cameras at their calibrated sizes and report video settings."""
     if parse_camera_source(args.cam0) == parse_camera_source(args.cam1):
         raise ValueError("Choose two different camera devices.")
-    sources = {name: args.calib_dir / name for name in CALIB_NAMES}
-    _read_calibration(sources)
-    args.session.mkdir(parents=True, exist_ok=False)
-    cal = _read_calibration(ensure_session(args.session, sources))
-    video_dir = args.session / "video"
-    video_dir.mkdir()
     sizes = (cal.size0, cal.size1)
     camera_settings = {"cam0": args.cam0, "cam1": args.cam1,
                        "requested_fps": args.fps, "requested_focus": args.focus,
                        "requested_exposure": args.exposure}
-    interrupted = False
     with ExitStack() as resources:
         caps = []
         for camera, source, size in zip(CAMERAS, (args.cam0, args.cam1), sizes):
@@ -115,6 +126,30 @@ def record(args):
         for camera in CAMERAS:
             reported = settings[f"actual_fps_{camera}"]
             header_rates.append(reported if math.isfinite(reported) and reported > 0 else args.fps)
+        yield caps, sizes, header_rates, {**camera_settings, **settings}
+
+
+def _write_recording_info(video_dir, cal, settings, streams, start_unix, *, seconds=None,
+                          interrupted=False):
+    """Publish the metadata only after both videos and timestamp files are closed."""
+    write_json(video_dir / "recording.json", {
+        "start_unix_ns": start_unix, "requested_seconds": seconds,
+        "interrupted": interrupted, "streams": streams,
+        "camera_settings": settings, "calibration_hashes": cal.hashes,
+        "timing_warning": TIMING_WARNING,
+    })
+
+
+def record(args):
+    """Capture two videos and preserve the calibration and acquisition metadata."""
+    sources = {name: args.calib_dir / name for name in CALIB_NAMES}
+    _read_calibration(sources)
+    args.session.mkdir(parents=True, exist_ok=False)
+    cal = _read_calibration(ensure_session(args.session, sources))
+    video_dir = args.session / "video"
+    video_dir.mkdir()
+    interrupted = False
+    with _open_recording_cameras(args, cal) as (caps, sizes, header_rates, settings):
         stop = Event()
         warmup_ns = NS_PER_SECOND
         start = time.monotonic_ns() + warmup_ns
@@ -134,13 +169,8 @@ def record(args):
                 stop.set()
             streams = {name: job.result() for name, job in zip(CAMERAS, jobs)}
 
-    write_json(video_dir / "recording.json", {
-        "start_unix_ns": start_unix, "requested_seconds": args.seconds,
-        "interrupted": interrupted, "streams": streams,
-        "camera_settings": {**camera_settings, **settings},
-        "calibration_hashes": cal.hashes,
-        "timing_warning": TIMING_WARNING,
-    })
+    _write_recording_info(video_dir, cal, settings, streams, start_unix,
+                          seconds=args.seconds, interrupted=interrupted)
     for camera, stream in streams.items():
         rate = stream["observed_fps"]
         observed = f"{rate:.1f} fps" if rate is not None else "rate unavailable"
@@ -258,20 +288,37 @@ def _elapsed(value):
     return number
 
 
+def _camera_args(parser):
+    parser.add_argument("--calib-dir", type=Path, required=True)
+    parser.add_argument("--cam0", default="0")
+    parser.add_argument("--cam1", default="1")
+    parser.add_argument("--fps", type=_positive, default=30, help="Requested camera fps (default 30)")
+    parser.add_argument("--focus", type=int, default=30)
+    parser.add_argument("--exposure", type=int)
+
+
+def _serve_web(args):
+    from wave_recording_web import serve
+
+    return serve(args)
+
+
 def main(argv=None):
-    """Run the recorder or export selected elapsed times from a saved recording."""
+    """Run live or timed capture, or export selected moments from a recording."""
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     capture = commands.add_parser("record", help="Record videos into a new session")
     capture.add_argument("--session", type=Path, required=True)
-    capture.add_argument("--calib-dir", type=Path, required=True)
-    capture.add_argument("--cam0", default="0")
-    capture.add_argument("--cam1", default="1")
-    capture.add_argument("--fps", type=_positive, default=30, help="Requested camera fps (default 30)")
+    _camera_args(capture)
     capture.add_argument("--seconds", type=_positive, default=15, help="Recording duration (default 15 s)")
-    capture.add_argument("--focus", type=int, default=30)
-    capture.add_argument("--exposure", type=int)
     capture.set_defaults(run=record)
+
+    web = commands.add_parser("web", help="Preview both cameras and start/stop recording in a browser")
+    _camera_args(web)
+    web.add_argument("--output-dir", type=Path, default=Path("../outputs/wave_trials"))
+    web.add_argument("--host", default="0.0.0.0")
+    web.add_argument("--port", type=int, default=5004)
+    web.set_defaults(run=_serve_web)
 
     pairs = commands.add_parser("export", help="Extract pairs at elapsed times in seconds")
     pairs.add_argument("--session", type=Path, required=True)

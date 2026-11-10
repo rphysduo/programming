@@ -96,7 +96,23 @@ root, and the hardware-free CLI example with
 Stop any server using the cameras. In the camera Python environment on the
 Jetson, use the same camera order, focus and resolution as calibration. The
 following example uses the calibration verified in `validation_flipped_board01`.
-Choose a new `RUN` directory for each recording.
+
+```bash
+cd ~/programming/camera
+CAL=../outputs/validation_flipped_board01/calibration
+python record_stereo_waves.py web --calib-dir "$CAL" --output-dir ../outputs/wave_trials \
+  --cam0 0 --cam1 1 --fps 30 --focus 30 --port 5004
+```
+
+Open `http://JETSON_IP:5004` for both live previews. Click **Start recording**
+when ready and **Stop recording** to save. There is no timer in browser mode.
+The previews stay live between trials, and each recording gets a fresh folder.
+Copy the **Last saved session** path for `RUN` in the export commands below.
+The live views update at a reduced rate and size to limit preview overhead.
+The videos use the calibrated resolution and the page reports their observed
+frame rates after saving.
+
+For timed capture from the terminal, choose a new `RUN` directory each time:
 
 ```bash
 cd ~/programming/camera
@@ -107,9 +123,9 @@ python record_stereo_waves.py record --calib-dir "$CAL" --session "$RUN" \
   --cam0 0 --cam1 1 --fps 30 --focus 30 --seconds 15
 ```
 
-Start the waves during the recording. The recorder stops automatically or you
-can press **Ctrl+C** after both cameras are recording. It saves `cam0.avi` and
-`cam1.avi` under `$RUN/video/`, with one Motion JPEG video and one frame
+In timed mode, start the waves during the recording. The recorder stops
+automatically or you can press **Ctrl+C** after both cameras are recording.
+Both modes save `cam0.avi` and `cam1.avi` under `$RUN/video/`, with one frame
 timestamp CSV per camera. It reports the observed frame rates and preserves a
 snapshot of the four calibration files. The default 30 fps matches the C920's
 1080p mode. The video files have fixed playback rates, while the CSVs record
