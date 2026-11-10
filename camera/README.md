@@ -91,6 +91,52 @@ root, and the hardware-free CLI example with
 
 ---
 
+## Record waves and label video frames
+
+Stop any server using the cameras. In the camera Python environment on the
+Jetson, use the same camera order, focus and resolution as calibration. The
+following example uses the calibration verified in `validation_flipped_board01`.
+Choose a new `RUN` directory for each recording.
+
+```bash
+cd ~/programming/camera
+CAL=../outputs/validation_flipped_board01/calibration
+RUN=../outputs/wave_trial01
+
+python record_stereo_waves.py record --calib-dir "$CAL" --session "$RUN" \
+  --cam0 0 --cam1 1 --fps 30 --focus 30 --seconds 15
+```
+
+Start the waves during the recording. The recorder stops automatically or you
+can press **Ctrl+C** after both cameras are recording. It saves `cam0.avi` and
+`cam1.avi` under `$RUN/video/`, with one Motion JPEG video and one frame
+timestamp CSV per camera. It reports the observed frame rates and preserves a
+snapshot of the four calibration files. The default 30 fps matches the C920's
+1080p mode. The video files have fixed playback rates, while the CSVs record
+actual elapsed host read times.
+
+Pick times within the recording, then extract and label those frames:
+
+```bash
+python record_stereo_waves.py export --session "$RUN" --at 2 4 6
+python validate_stereo_3d.py label --calib-dir "$CAL" --session "$RUN" --port 5003
+```
+
+Open `http://JETSON_IP:5003`, choose a pair, mark the same feature in both
+images, and press **Save**. The export command creates ordinary `pairs/`
+directories in the recording session. Repeat it with other elapsed times to
+add pairs, then restart the labeler so they appear in the selector. The
+export skips frames already saved as a pair.
+
+Export selects the frame in cam0 nearest the requested elapsed time and then
+matches the closest cam1 host read time. The default `--max-gap-ms 18` rejects
+pairs with larger logged gaps. The two C920s expose independently. A small
+host read-time gap does not establish simultaneous exposure, and motion can
+affect triangulation. Check timing with a shared visible flash before using
+the exported coordinates for quantitative wave measurements.
+
+---
+
 ## 1. The physical setup
 
 | Thing | Value | Where it is defined |
