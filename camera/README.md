@@ -131,25 +131,27 @@ snapshot of the four calibration files. The default 30 fps matches the C920's
 1080p mode. The video files have fixed playback rates, while the CSVs record
 actual elapsed host read times.
 
-Pick times within the recording, then extract and label those frames:
+Export every frame for labeling after stopping the recording:
 
 ```bash
-python record_stereo_waves.py export --session "$RUN" --at 2 4 6
+python record_stereo_waves.py export --session "$RUN" --all
 python validate_stereo_3d.py label --calib-dir "$CAL" --session "$RUN" --port 5003
 ```
 
-Open `http://JETSON_IP:5003`, choose a pair, mark the same feature in both
-images, and press **Save**. The export command creates ordinary `pairs/`
-directories in the recording session. Repeat it with other elapsed times to
-add pairs, then restart the labeler so they appear in the selector. The
-export skips frames already saved as a pair.
+Open `http://JETSON_IP:5003` and use **Prev** and **Next** to step through
+pairs in recording order. Mark the same feature in both images, then press
+**Save**. Full export includes every frame from both cameras, using the
+nearest host read time for its partner. A frame can appear in multiple
+pairs when the streams differ. The export skips pairs already saved, so
+earlier labels remain available. Restart the labeler if it was already open.
+The full-resolution PNGs in `pairs/` take extra disk space beyond the videos.
 
-Export selects the frame in cam0 nearest the requested elapsed time and then
-matches the closest cam1 host read time. The default `--max-gap-ms 18` rejects
-pairs with larger logged gaps. The two C920s expose independently. A small
-host read-time gap does not establish simultaneous exposure, and motion can
-affect triangulation. Check timing with a shared visible flash before using
-the exported coordinates for quantitative wave measurements.
+Use `--at 2 4 6` in place of `--all` to export only specific elapsed times.
+The default `--max-gap-ms 18` rejects larger gaps for `--at`. With `--all`,
+those pairs remain available for labeling and show a timing warning. The two
+C920s expose independently. A small host read-time gap does not establish
+simultaneous exposure, and motion can affect triangulation. Check timing with
+a shared visible flash before using coordinates for quantitative measurements.
 
 ---
 

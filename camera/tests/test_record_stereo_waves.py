@@ -10,6 +10,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import record_stereo_waves as recorder
+import validate_stereo_3d as labeler
 from validate_stereo_3d import create_label_web_app, list_pair_dirs, read_json
 from wave_recording_web import WaveRecorder, create_app
 
@@ -142,3 +143,60 @@ def test_browser_can_preview_record_stop_and_start_another_trial(tmp_path, calib
             assert recorder.main(["export", "--session", str(session), "--at", "0",
                                   "--max-gap-ms", "50"]) == 0
             assert len(list_pair_dirs(session)) == 1
+
+
+def test_full_export_covers_both_streams_and_labeler_steps_in_time_order(
+        tmp_path, calib_dir, monkeypatch):
+    session = tmp_path / "trial"
+    paths = {name: calib_dir / name for name in recorder.CALIB_NAMES}
+    cal = recorder.load_calibration(recorder.ensure_session(session, paths, quiet=True))
+    video = session / "video"
+    video.mkdir()
+    times = ((0, 60, 120), (2, 30, 62, 170))
+    epoch = 1_700_000_000_000_000_000
+    streams = {}
+    for camera, elapsed_ms in zip(recorder.CAMERAS, times):
+        with recorder.ExitStack() as resources:
+            stream = recorder._RecordingStream(resources, video, camera, (64, 48), 30)
+            for i, ms in enumerate(elapsed_ms):
+                frame = np.full((48, 64, 3), 40 + i * 30, np.uint8)
+                stream.write(frame, ms * 1_000_000, 0, epoch)
+        streams[camera] = stream.summary()
+    recorder._write_recording_info(video, cal, {}, streams, epoch)
+
+    command = ["export", "--session", str(session)]
+    assert recorder.main(command + ["--at", "0.06"]) == 0
+    original = list_pair_dirs(session)[0]
+    labels = original / "correspondences.json"
+    labels.write_text('{"points": []}', encoding="utf-8")
+    assert recorder.main(command + ["--all"]) == 0
+    assert recorder.main(command + ["--all"]) == 0
+    assert labels.read_text(encoding="utf-8") == '{"points": []}'
+
+    pairs = {}
+    for path in list_pair_dirs(session):
+        meta = read_json(path / "pair.json")
+        indices = tuple(meta["video_frame_indices"])
+        assert indices not in pairs
+        pairs[indices] = path
+        for camera, index in zip(recorder.CAMERAS, indices):
+            frame = cv2.imread(str(path / f"{camera}.png"))
+            assert frame.mean() == pytest.approx(40 + index * 30, abs=2)
+    assert set(pairs) == {(0, 0), (0, 1), (1, 2), (2, 3)}
+    wide = read_json(pairs[(2, 3)] / "pair.json")
+    assert wide["video_read_gap_exceeds_limit"]
+    assert wide["inter_camera_read_gap_ms"] == pytest.approx(50)
+
+    run = []
+
+    def check_app(session, cal, ordered, width):
+        client = create_label_web_app(session, cal, ordered, width).test_client()
+        expected = [pairs[key].name for key in ((0, 0), (0, 1), (1, 2), (2, 3))]
+        assert client.get("/api/pairs").get_json()["pairs"] == expected
+        warnings = client.get(f"/api/pair/{expected[-1]}").get_json()["warnings"]
+        assert any("Large timing gap" in message for message in warnings)
+        return type("App", (), {"run": lambda self, **kw: run.append(True)})()
+
+    monkeypatch.setattr(labeler, "create_label_web_app", check_app)
+    assert labeler.main(["label", "--session", str(session), "--calib-dir", str(calib_dir)]) == 0
+    assert run

@@ -2549,8 +2549,9 @@ def preliminary_distances(session: Path, cal: Calibration, plan: dict,
 # ============================================================
 
 def _save_pair(session: Path, frame0: np.ndarray, frame1: np.ndarray,
-               meta_extra: dict, cam_times_ns: list[int] | None = None) -> Path:
-    n = _next_pair_number(session)
+               meta_extra: dict, cam_times_ns: list[int] | None = None, *,
+               pair_number: int | None = None) -> Path:
+    n = _next_pair_number(session) if pair_number is None else pair_number
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     pair_dir = session / "pairs" / f"pair_{n:04d}_{stamp}"
     pair_dir.mkdir(parents=True, exist_ok=False)
@@ -6542,6 +6543,9 @@ def cmd_label(args: argparse.Namespace) -> int:
     if not pairs:
         print(f"No saved pairs under {session / 'pairs'}.  Run capture first.")
         return 2
+    if (session / "video" / "recording.json").is_file():
+        # Frames may have been exported in separate batches, out of time order.
+        pairs.sort(key=lambda pair: _load_pair_meta(pair).get("timestamp_unix", float("inf")))
     try:
         app = create_label_web_app(session, cal, pairs, args.display_width)
     except Exception as exc:  # noqa: BLE001

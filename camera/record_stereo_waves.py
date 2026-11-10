@@ -19,6 +19,7 @@ from charuco_common import open_camera, parse_camera_source
 from validate_stereo_3d import (
     CALIB_NAMES,
     _capture_actual_settings,
+    _next_pair_number,
     _save_pair,
     ensure_session,
     list_pair_dirs,
@@ -199,6 +200,18 @@ def _nearest(times, target):
     return index
 
 
+def _all_frame_pairs(times0, times1):
+    """Cover both streams by matching every frame to its nearest partner.
+
+    Nearest matches in each direction are monotonic, and their union cannot
+    cross: a crossed pair would require both frames to prefer more distant
+    neighbors. Sorting by indices permits sequential decoding of both videos.
+    """
+    matches = {(i, _nearest(times1, t)) for i, t in enumerate(times0)}
+    matches.update((_nearest(times0, t), j) for j, t in enumerate(times1))
+    return sorted(matches)
+
+
 def _selected_frames(path, indices):
     """Decode in order so indices agree with the CSV even without accurate seeking."""
     cap = cv2.VideoCapture(str(path))
@@ -207,6 +220,8 @@ def _selected_frames(path, indices):
             raise RuntimeError(f"Could not read {path}")
         current = -1
         for index in indices:
+            if index < current:
+                raise ValueError(f"Frame indices must be nondecreasing in {path}")
             while current < index:
                 ok, frame = cap.read()
                 if not ok:
@@ -227,9 +242,16 @@ def export(args):
     logs = [_read_timestamps(video_dir / f"{cam}_frames.csv", recording["streams"][cam]["frames"])
             for cam in CAMERAS]
     times0, times1 = [[row[1] for row in log] for log in logs]
-    latest = min(times0[-1], times1[-1]) / NS_PER_SECOND
-    if max(args.at) > latest:
-        raise ValueError(f"Requested time exceeds the shared recording. Choose times from 0 to {latest:.3f} s.")
+    if args.all:
+        candidates = ((None, i, j) for i, j in _all_frame_pairs(times0, times1))
+    else:
+        latest = min(times0[-1], times1[-1]) / NS_PER_SECOND
+        if max(args.at) > latest:
+            raise ValueError(f"Requested time exceeds the shared recording. Choose times from 0 to {latest:.3f} s.")
+        candidates = []
+        for seconds in sorted(args.at):
+            i = _nearest(times0, round(seconds * NS_PER_SECOND))
+            candidates.append((seconds, i, _nearest(times1, times0[i])))
 
     seen = set()
     for path in list_pair_dirs(args.session):
@@ -240,11 +262,9 @@ def export(args):
                 seen.add(tuple(indices))
     selected = []
     rejected = False
-    for seconds in sorted(args.at):
-        i = _nearest(times0, round(seconds * NS_PER_SECOND))
-        j = _nearest(times1, times0[i])
+    for seconds, i, j in candidates:
         gap_ms = abs(times0[i] - times1[j]) / 1e6
-        if gap_ms > args.max_gap_ms:
+        if not args.all and gap_ms > args.max_gap_ms:
             print(f"Skipped {seconds:g} s: closest read-time gap {gap_ms:.2f} ms "
                   f"exceeds {args.max_gap_ms:g} ms.", file=sys.stderr)
             rejected = True
@@ -253,22 +273,39 @@ def export(args):
             selected.append((seconds, i, j, gap_ms))
 
     if selected:
+        first_number = _next_pair_number(args.session)
+        if args.all:
+            print(f"Exporting {len(selected)} new pairs as full-resolution PNGs.", flush=True)
         with (closing(_selected_frames(video_dir / "cam0.avi", [s[1] for s in selected])) as frames0,
               closing(_selected_frames(video_dir / "cam1.avi", [s[2] for s in selected])) as frames1):
-            for (seconds, i, j, gap_ms), frame0, frame1 in zip(selected, frames0, frames1):
+            for count, ((seconds, i, j, gap_ms), frame0, frame1) in enumerate(zip(selected, frames0, frames1)):
                 _check_frame(frame0, cal.size0, "cam0")
                 _check_frame(frame1, cal.size1, "cam1")
                 read_times = [logs[0][i][2], logs[1][j][2]]
+                elapsed = [times0[i] / NS_PER_SECOND, times1[j] / NS_PER_SECOND]
+                wide_gap = gap_ms > args.max_gap_ms
+                warning = (f"Video frames {i}/{j} at {sum(elapsed) / 2:.3f} s. "
+                           f"Host read gap {gap_ms:.2f} ms. " + TIMING_WARNING)
+                if wide_gap:
+                    warning = (f"Large timing gap: {gap_ms:.2f} ms exceeds "
+                               f"{args.max_gap_ms:g} ms. Retained for labeling. " + warning)
                 path = _save_pair(args.session, frame0, frame1, {
-                    "warning": TIMING_WARNING,
+                    "warning": warning,
                     "timestamp_unix": sum(read_times) / (2 * NS_PER_SECOND),
                     "calibration_hashes": cal.hashes,
                     "camera_settings": recording["camera_settings"],
                     "video_frame_indices": [i, j],
                     "video_requested_seconds": seconds,
-                    "video_frame_elapsed_seconds": [times0[i] / NS_PER_SECOND, times1[j] / NS_PER_SECOND],
-                }, read_times)
-                print(f"Saved {path.name} for {seconds:g} s (frames {i}/{j}, read gap {gap_ms:.2f} ms)")
+                    "video_frame_elapsed_seconds": elapsed,
+                    "video_read_gap_exceeds_limit": wide_gap,
+                }, read_times, pair_number=first_number + count)
+                if not args.all:
+                    print(f"Saved {path.name} for {seconds:g} s (frames {i}/{j}, read gap {gap_ms:.2f} ms)")
+                elif (count + 1) % 100 == 0:
+                    print(f"Exported {count + 1}/{len(selected)} pairs.", flush=True)
+        if args.all:
+            wide = sum(gap > args.max_gap_ms for _, _, _, gap in selected)
+            print(f"Saved {len(selected)} new pairs ({wide} with timing-gap warnings).")
     else:
         print("No new pairs exported.")
     return int(rejected)
@@ -320,11 +357,13 @@ def main(argv=None):
     web.add_argument("--port", type=int, default=5004)
     web.set_defaults(run=_serve_web)
 
-    pairs = commands.add_parser("export", help="Extract pairs at elapsed times in seconds")
+    pairs = commands.add_parser("export", help="Extract pairs from the recorded videos")
     pairs.add_argument("--session", type=Path, required=True)
-    pairs.add_argument("--at", nargs="+", type=_elapsed, required=True)
+    selection = pairs.add_mutually_exclusive_group(required=True)
+    selection.add_argument("--at", nargs="+", type=_elapsed, help="Selected elapsed times in seconds")
+    selection.add_argument("--all", action="store_true", help="Include every frame from both cameras")
     pairs.add_argument("--max-gap-ms", type=_positive, default=18,
-                       help="Maximum host read-time gap (default 18 ms)")
+                       help="Host read-gap limit (default 18 ms). Skip with --at, warn with --all.")
     pairs.set_defaults(run=export)
     args = parser.parse_args(argv)
     try:
