@@ -1,6 +1,5 @@
 """Browser controls and live previews for the stereo wave recorder."""
 from contextlib import ExitStack
-from datetime import datetime
 from threading import Event, Lock, Thread
 import time
 
@@ -9,7 +8,7 @@ from flask import Flask, Response, jsonify, request
 
 from record_stereo_waves import (
     CALIB_NAMES, CAMERAS, NS_PER_SECOND, TIMING_WARNING, _RecordingStream,
-    _check_frame, _open_recording_cameras, _read_calibration, _write_recording_info,
+    _check_frame, _new_session, _open_recording_cameras, _read_calibration, _write_recording_info,
     ensure_session,
 )
 from web_tags import LiveView, encode_jpeg
@@ -136,9 +135,7 @@ class WaveRecorder:
                 raise RuntimeError("A recording is already running.")
             if _read_calibration(self.sources).hashes != self.cal.hashes:
                 raise RuntimeError("Calibration changed on disk. Restart the recorder.")
-            stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            session = self.output_dir / f"wave_{stamp}"
-            session.mkdir(parents=True, exist_ok=False)
+            session = _new_session(self.output_dir)
             cal = _read_calibration(ensure_session(session, self.sources, quiet=True))
             if cal.hashes != self.cal.hashes:
                 raise RuntimeError("Calibration changed while starting. Restart the recorder.")

@@ -7,6 +7,8 @@ from bisect import bisect_left
 from concurrent.futures import FIRST_EXCEPTION, ThreadPoolExecutor, wait
 from contextlib import ExitStack, closing, contextmanager
 import csv
+from datetime import datetime
+from itertools import count
 import math
 from pathlib import Path
 import sys
@@ -30,6 +32,7 @@ from validate_stereo_3d import (
 
 
 CAMERAS = ("cam0", "cam1")
+DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "outputs"
 NS_PER_SECOND = 1_000_000_000
 TIMESTAMP_COLUMNS = ("frame_index", "elapsed_ns", "read_timestamp_ns")
 TIMING_WARNING = (
@@ -141,13 +144,31 @@ def _write_recording_info(video_dir, cal, settings, streams, start_unix, *, seco
     })
 
 
+def _new_session(output_dir):
+    """Reserve a fresh session directory for a browser or terminal recording."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    for index in count():
+        suffix = f"_{index}" if index else ""
+        session = output_dir / f"wave_{stamp}{suffix}"
+        try:
+            session.mkdir()
+        except FileExistsError:
+            continue
+        return session
+
+
 def record(args):
     """Capture two videos and preserve the calibration and acquisition metadata."""
     sources = {name: args.calib_dir / name for name in CALIB_NAMES}
     _read_calibration(sources)
-    args.session.mkdir(parents=True, exist_ok=False)
-    cal = _read_calibration(ensure_session(args.session, sources))
-    video_dir = args.session / "video"
+    session = args.session
+    if session is None:
+        session = _new_session(args.output_dir)
+    else:
+        session.mkdir(parents=True, exist_ok=False)
+    cal = _read_calibration(ensure_session(session, sources))
+    video_dir = session / "video"
     video_dir.mkdir()
     interrupted = False
     with _open_recording_cameras(args, cal) as (caps, sizes, header_rates, settings):
@@ -177,6 +198,7 @@ def record(args):
         observed = f"{rate:.1f} fps" if rate is not None else "rate unavailable"
         print(f"{camera}: {stream['frames']} frames, {observed} observed")
     print(f"Saved both videos and timestamps to {video_dir}")
+    print(f"Saved session: {session}")
     return 0
 
 
@@ -345,14 +367,18 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     capture = commands.add_parser("record", help="Record videos into a new session")
-    capture.add_argument("--session", type=Path, required=True)
+    location = capture.add_mutually_exclusive_group()
+    location.add_argument("--session", type=Path, help="Use a specific new session directory")
+    location.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR,
+                          help="Parent folder for automatic sessions (default: repository outputs/)")
     _camera_args(capture)
     capture.add_argument("--seconds", type=_positive, default=15, help="Recording duration (default 15 s)")
     capture.set_defaults(run=record)
 
     web = commands.add_parser("web", help="Preview both cameras and start/stop recording in a browser")
     _camera_args(web)
-    web.add_argument("--output-dir", type=Path, default=Path("../outputs/wave_trials"))
+    web.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR,
+                     help="Parent folder for automatic sessions (default: repository outputs/)")
     web.add_argument("--host", default="0.0.0.0")
     web.add_argument("--port", type=int, default=5004)
     web.set_defaults(run=_serve_web)

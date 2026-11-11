@@ -100,28 +100,31 @@ following example uses the calibration verified in `validation_flipped_board01`.
 ```bash
 cd ~/programming/camera
 CAL=../outputs/validation_flipped_board01/calibration
-python record_stereo_waves.py web --calib-dir "$CAL" --output-dir ../outputs/wave_trials \
+python record_stereo_waves.py web --calib-dir "$CAL" \
   --cam0 0 --cam1 1 --fps 30 --focus 30 --port 5004
 ```
 
 Open `http://JETSON_IP:5004` for both live previews. Click **Start recording**
 when ready and **Stop recording** to save. There is no timer in browser mode.
-The previews stay live between trials, and each recording gets a fresh folder.
+The previews stay live between trials. Each **Start recording** creates its own
+`outputs/wave_<timestamp>/` session at the repository root.
 Copy the **Last saved session** path for `RUN` in the export commands below.
 The live views update at a reduced rate and size to limit preview overhead.
 The videos use the calibrated resolution and the page reports their observed
 frame rates after saving.
 
-For timed capture from the terminal, choose a new `RUN` directory each time:
+Timed capture from the terminal also creates a new session on every run:
 
 ```bash
 cd ~/programming/camera
 CAL=../outputs/validation_flipped_board01/calibration
-RUN=../outputs/wave_trial01
-
-python record_stereo_waves.py record --calib-dir "$CAL" --session "$RUN" \
+python record_stereo_waves.py record --calib-dir "$CAL" \
   --cam0 0 --cam1 1 --fps 30 --focus 30 --seconds 15
 ```
+
+Copy the printed **Saved session** path for `RUN`. To choose a different parent
+folder in either mode, pass `--output-dir`. Timed mode also accepts `--session`
+for an exact new directory.
 
 In timed mode, start the waves during the recording. The recorder stops
 automatically or you can press **Ctrl+C** after both cameras are recording.
@@ -135,7 +138,7 @@ Export every frame for labeling after stopping the recording:
 
 ```bash
 python record_stereo_waves.py export --session "$RUN" --all
-python validate_stereo_3d.py label --calib-dir "$CAL" --session "$RUN" --port 5003
+python validate_stereo_3d.py label --calib-dir "$RUN/calibration" --session "$RUN" --port 5003
 ```
 
 Open `http://JETSON_IP:5003` and use **Prev** and **Next** to step through
@@ -145,6 +148,9 @@ nearest host read time for its partner. A frame can appear in multiple
 pairs when the streams differ. The export skips pairs already saved, so
 earlier labels remain available. Restart the labeler if it was already open.
 The full-resolution PNGs in `pairs/` take extra disk space beyond the videos.
+If the pictures already exist in the session's `pairs/` directory, run only
+the label command with that session path. Save writes the selected points
+into `correspondences.json` in the corresponding pair directory.
 
 Use `--at 2 4 6` in place of `--all` to export only specific elapsed times.
 The default `--max-gap-ms 18` rejects larger gaps for `--at`. With `--all`,

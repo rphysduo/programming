@@ -49,6 +49,23 @@ class FakeCamera:
         self.released = True
 
 
+def test_timed_runs_create_distinct_default_sessions(tmp_path, calib_dir, monkeypatch):
+    output = tmp_path / "outputs"
+    monkeypatch.setattr(recorder, "DEFAULT_OUTPUT_DIR", output)
+    monkeypatch.setattr(recorder, "open_camera",
+                        lambda source, *a, **k: (FakeCamera(40), (64, 48)))
+    command = ["record", "--calib-dir", str(calib_dir), "--seconds", "0.2"]
+    assert recorder.main(command) == 0
+    first, = output.glob("wave_*")
+    original = (first / "video/recording.json").read_bytes()
+    assert recorder.main(command) == 0
+    sessions = set(output.glob("wave_*"))
+    assert len(sessions) == 2
+    second, = sessions - {first}
+    assert (second / "video/recording.json").is_file()
+    assert (first / "video/recording.json").read_bytes() == original
+
+
 def test_record_export_and_open_in_labeler(tmp_path, calib_dir, monkeypatch):
     session = tmp_path / "trial"
     cameras = [FakeCamera(30), FakeCamera(180)]
@@ -198,5 +215,6 @@ def test_full_export_covers_both_streams_and_labeler_steps_in_time_order(
         return type("App", (), {"run": lambda self, **kw: run.append(True)})()
 
     monkeypatch.setattr(labeler, "create_label_web_app", check_app)
-    assert labeler.main(["label", "--session", str(session), "--calib-dir", str(calib_dir)]) == 0
+    assert labeler.main(["label", "--session", str(session), "--calib-dir",
+                         str(session / "calibration")]) == 0
     assert run
