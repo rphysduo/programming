@@ -1,0 +1,34 @@
+{
+  "created_iso": "2026-11-10T13:20:05-05:00",
+  "files": {
+    "cam0_intrinsics.npz": {
+      "source_path": "/home/nicholas/programming/outputs/validation_flipped_board01/calibration/cam0_intrinsics.npz",
+      "session_path": "/home/nicholas/programming/outputs/wave_trial01/calibration/cam0_intrinsics.npz",
+      "sha256": "529adac7fd421b70ee4c4e8abc5b853d1395512ddfa12d6adac3bd79c25e8992",
+      "size_bytes": 914,
+      "copied_iso": "2026-11-10T13:20:05-05:00"
+    },
+    "cam1_intrinsics.npz": {
+      "source_path": "/home/nicholas/programming/outputs/validation_flipped_board01/calibration/cam1_intrinsics.npz",
+      "session_path": "/home/nicholas/programming/outputs/wave_trial01/calibration/cam1_intrinsics.npz",
+      "sha256": "e4736c561d61e1622a163b5e7912f92fc10468f8e4f3fce5c5d82c78b8e5766b",
+      "size_bytes": 914,
+      "copied_iso": "2026-11-10T13:20:05-05:00"
+    },
+    "stereo_params.npz": {
+      "source_path": "/home/nicholas/programming/outputs/validation_flipped_board01/calibration/stereo_params.npz",
+      "session_path": "/home/nicholas/programming/outputs/wave_trial01/calibration/stereo_params.npz",
+      "sha256": "48f454ae09efceebd80d1b76dfe350ad73fd4df6bc880100d437bdef5fa5fb77",
+      "size_bytes": 2630,
+      "copied_iso": "2026-11-10T13:20:05-05:00"
+    },
+    "tank_alignment.npz": {
+      "source_path": "/home/nicholas/programming/outputs/validation_flipped_board01/calibration/tank_alignment.npz",
+      "session_path": "/home/nicholas/programming/outputs/wave_trial01/calibration/tank_alignment.npz",
+      "sha256": "30d50eeda1bb88ced435f42b7a742ba2e24336729c1c79c4820b67ab38325ef0",
+      "size_bytes": 7571,
+      "copied_iso": "2026-11-10T13:20:05-05:00"
+    }
+  },
+  "updated_iso": "2026-11-10T13:20:05-05:00"
+}

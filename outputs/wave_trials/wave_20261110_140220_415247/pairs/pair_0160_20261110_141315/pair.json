@@ -1,0 +1,64 @@
+{
+  "pair_id": "pair_0160_20261110_141315",
+  "created_iso": "2026-11-10T14:13:16-05:00",
+  "timestamp_unix": 1794337358.5483012,
+  "cam0": {
+    "file": "cam0.png",
+    "shape": [
+      1080,
+      1920,
+      3
+    ],
+    "read_timestamp_ns": 1794337358534128344,
+    "read_timestamp_iso": "2026-11-10T14:02:38.534-05:00"
+  },
+  "cam1": {
+    "file": "cam1.png",
+    "shape": [
+      1080,
+      1920,
+      3
+    ],
+    "read_timestamp_ns": 1794337358562474009,
+    "read_timestamp_iso": "2026-11-10T14:02:38.562-05:00"
+  },
+  "inter_camera_read_gap_ms": 28.345665,
+  "warning": "Large timing gap: 28.35 ms exceeds 18 ms. Retained for labeling. Video frames 145/159 at 18.104 s. Host read gap 28.35 ms. Wave frames are paired by host read time. The C920 cameras are not hardware synchronized. The displayed gap does not measure exposure-time skew.",
+  "calibration_hashes": {
+    "cam0_intrinsics.npz": "529adac7fd421b70ee4c4e8abc5b853d1395512ddfa12d6adac3bd79c25e8992",
+    "cam1_intrinsics.npz": "e4736c561d61e1622a163b5e7912f92fc10468f8e4f3fce5c5d82c78b8e5766b",
+    "stereo_params.npz": "48f454ae09efceebd80d1b76dfe350ad73fd4df6bc880100d437bdef5fa5fb77",
+    "tank_alignment.npz": "30d50eeda1bb88ced435f42b7a742ba2e24336729c1c79c4820b67ab38325ef0"
+  },
+  "camera_settings": {
+    "cam0": "0",
+    "cam1": "1",
+    "requested_fps": 30.0,
+    "requested_focus": 30,
+    "requested_exposure": null,
+    "actual_size_cam0": [
+      1920,
+      1080
+    ],
+    "actual_size_cam1": [
+      1920,
+      1080
+    ],
+    "actual_fps_cam0": 30.0,
+    "actual_fps_cam1": 30.0,
+    "actual_focus_cam0": 30.0,
+    "actual_focus_cam1": 30.0,
+    "actual_exposure_cam0": 83.0,
+    "actual_exposure_cam1": 83.0
+  },
+  "video_frame_indices": [
+    145,
+    159
+  ],
+  "video_requested_seconds": null,
+  "video_frame_elapsed_seconds": [
+    18.089604579,
+    18.117950244
+  ],
+  "video_read_gap_exceeds_limit": true
+}
