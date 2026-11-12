@@ -1,0 +1,23 @@
+:root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background:#131922; color:#e7ecf3; }
+body { margin:0 auto; padding:20px; max-width:1800px; }
+h1 { font-size:24px; margin:0 0 8px; } h2 { font-size:19px; }
+p { line-height:1.5; } #source { overflow-wrap:anywhere; color:#aebed2; font-size:13px; }
+.toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+button, select, input, textarea { font:inherit; color:inherit; background:#202b3a; border:1px solid #485971; border-radius:5px; padding:7px 10px; }
+button { cursor:pointer; } button:hover { background:#33465e; } button:disabled { opacity:.45; cursor:default; }
+.primary { background:#225b9e; } button.active { border-color:#62c5f7; background:#234265; }
+label { display:block; margin:10px 0; } label input:not([type=checkbox]), label textarea { box-sizing:border-box; max-width:100%; }
+textarea { display:block; width:100%; margin-top:5px; } input[type=number] { width:90px; }
+#pair { max-width:480px; } .tools { margin-top:16px; } .hint { font-size:14px; color:#b4c6dc; }
+#views { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+figure { margin:0; min-width:0; } figcaption { margin:6px 0; color:#a9c8ef; font-size:14px; }
+canvas { width:100%; height:auto; aspect-ratio:16 / 9; background:#080d14; border:0; outline:1px solid #4b617e; box-sizing:border-box; touch-action:none; cursor:crosshair; }
+.panels { display:grid; grid-template-columns:1fr 1fr; gap:16px; } section { padding:16px; margin:12px 0; background:#192331; border:1px solid #344358; border-radius:8px; min-width:0; }
+fieldset { border:1px solid #465970; margin:12px 0; } #objects { display:flex; flex-wrap:wrap; gap:6px; margin:12px 0; }
+#message { min-height:25px; color:#f2cb7b; } #save-state { color:#b7d8ae; }
+pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:260px; overflow:auto; }
+.table-wrap { overflow:auto; } table { border-collapse:collapse; width:100%; font-size:14px; }
+th,td { text-align:left; padding:10px; border-bottom:1px solid #364760; vertical-align:top; }
+@media(max-width:800px) { #views,.panels { grid-template-columns:1fr; } canvas { height:auto; } }
+
+[hidden] { display:none !important; }

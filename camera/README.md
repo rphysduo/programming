@@ -21,6 +21,14 @@ can consume.
 
 ---
 
+## Recorded-wave inspection and annotation
+
+Use the [offline wave-analysis guide](wave_analysis/README.md) to inspect actual
+video timing, review all recorded frames, save versioned surface points and
+independent traces, and label breaking events. It includes the November 10
+feasibility findings and exact lab commands. The geometry export reuses the
+existing calibration snapshots and stereo checks.
+
 ## Cross-camera point guide (saved stereo pairs)
 
 Start the updated labeler from `~/programming/camera`, using your existing

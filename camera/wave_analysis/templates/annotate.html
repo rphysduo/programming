@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wave surface annotation</title>
+<link rel="stylesheet" href="/static/annotate.css">
+<script src="/static/annotate.js" defer></script>
+</head>
+<body>
+<header>
+<h1>Wave surface annotation</h1>
+<p id="source"></p>
+<div class="toolbar">
+<button id="previous">Previous</button><select id="pair" aria-label="Frame pair"></select><button id="next">Next</button>
+<button id="save" class="primary">Save revision</button><button id="reopen">Reopen saved</button><span id="save-state"></span>
+</div>
+<p id="timing"></p>
+<details><summary>Calibration and coordinate status</summary><pre id="calibration"></pre></details>
+</header>
+<div class="toolbar tools">
+<label>Tool <select id="mode">
+<option value="select">Select / edit</option><option value="point">Stereo point</option><option value="trace">Image trace</option>
+<option value="reflection">Reflection mask</option><option value="occlusion">Occlusion mask</option><option value="glare">Glare mask</option>
+<option value="onset">Breaking location</option></select></label>
+<button id="finish">Finish trace / mask</button><button id="unmatched">Keep unmatched point</button>
+<button id="cancel">Cancel pending</button><button id="fit">Fit views</button>
+<label><input id="guide" type="checkbox" checked> Epipolar guide</label>
+</div>
+<p class="hint">Click the same physical feature in both cameras. Wheel to zoom, Shift-drag or right-drag to pan. Trace each view independently. In Select / edit, drag a point or vertex to correct it.</p>
+<div id="views">
+<figure><figcaption id="caption0">cam0</figcaption><canvas id="view0" aria-label="Camera 0 annotation view"></canvas></figure>
+<figure><figcaption id="caption1">cam1</figcaption><canvas id="view1" aria-label="Camera 1 annotation view"></canvas></figure>
+</div>
+<p id="message" role="status"></p>
+<div class="panels">
+<section>
+<h2>Surface observations</h2>
+<div class="toolbar"><button id="delete">Delete selected</button><button id="earlier">Earlier along profile</button><button id="later">Later along profile</button></div>
+<div id="objects"></div>
+<fieldset id="editor" disabled>
+<legend>Selected observation</legend>
+<label>Label <input id="label"></label>
+<label>Confidence, 0 to 1 <input id="confidence" type="number" min="0" max="1" step="0.05"></label>
+<label id="status-label">Correspondence <select id="status"><option value="uncertain">Uncertain</option><option value="verified">Verified physical match</option><option value="unmatched">Unmatched</option></select></label>
+<label id="direction-label">Trace direction <select id="direction"><option value="unknown">Unknown</option><option value="along_propagation">Vertices follow propagation</option></select></label>
+<label>Observation notes <textarea id="object-notes" rows="2"></textarea></label>
+<p id="origin"></p>
+</fieldset>
+<label>Frame review notes <textarea id="notes" rows="2"></textarea></label>
+</section>
+<section>
+<h2>Breaking event</h2>
+<p>Label the pair containing the first visible onset. Use Unknown if the outcome leaves view. Check adjacent frames for crest overturning or spilling foam attached to the wave.</p>
+<label>Observed <select id="breaking"><option value="unknown">Unknown</option><option value="yes">Yes, first visible onset here</option><option value="no">No, complete outcome observed</option></select></label>
+<label>Wave ID, or trial <input id="wave-id" placeholder="trial or a researcher-assigned wave ID"></label>
+<label>Onset camera <select id="onset-camera"><option value="">Select for a yes outcome</option><option value="cam0">cam0</option><option value="cam1">cam1</option></select></label>
+<label>Confidence, 0 to 1 <input id="breaking-confidence" type="number" min="0" max="1" step="0.05" value="0.5"></label>
+<label><input id="complete" type="checkbox"> Complete outcome remained observable</label>
+<label>Onset criterion <textarea id="criterion" rows="2"></textarea></label>
+<label>Event notes <textarea id="breaking-notes" rows="2"></textarea></label>
+<p id="onset-info"></p>
+</section>
+</div>
+<section>
+<h2>Point geometry</h2>
+<p>Verified matches use the existing calibration and geometry checks. Masked observations remain flagged. Board XYZ is in millimeters. Physical up, tank axes and still-water elevation await measured verification.</p>
+<div class="table-wrap"><table><thead><tr><th>Point</th><th>Correspondence</th><th>Board X, Y, Z (mm)</th><th>Geometry valid</th><th>Reprojection 0 / 1 (px)</th><th>Epipolar (px)</th><th>Flags</th></tr></thead><tbody id="geometry"></tbody></table></div>
+</section>
+</body>
+</html>
