@@ -18,7 +18,10 @@ function currentObject() {
   return documentData[selected.group].find(item => item.id === selected.id);
 }
 function newObject() {
-  return {id:crypto.randomUUID(), label:'', confidence:0.5, origin:'human', notes:''};
+  // getRandomValues also works when the browser connects to the lab server over HTTP.
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  const id = Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
+  return {id, label:'', confidence:0.5, origin:'human', notes:''};
 }
 function cancelDraft() { draft = null; guide = null; guideSequence++; draw(); }
 function draw() { views.forEach(view => view.draw()); }

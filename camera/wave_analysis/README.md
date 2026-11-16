@@ -100,10 +100,10 @@ The visual review is provisional. Synthetic geometry tests establish numerical b
 ```bash
 python -m pytest
 python camera/validate_stereo_3d.py selftest
-node --check camera/wave_analysis/static/annotate.js
+node --test camera/tests/annotate.test.mjs
 ```
 
-Node is only an optional JavaScript syntax-check tool during development. The annotation app runs with Python and a browser.
+Node is only needed to run the optional JavaScript regression test. The annotation app runs with Python and a browser.
 
 The focused tests use synthetic MJPG videos, irregular timestamps and known camera geometry. They cover malformed metadata, missing files, changed calibration hashes, source immutability, annotation revision history, concurrent saves, bad pixels, masks, unmatched observations, breaking labels, preserved rejection thresholds, Flask endpoints and reproducible reconstruction after reopening.
 
