@@ -27,6 +27,8 @@
 <button id="cancel">Cancel pending</button><button id="fit">Fit views</button>
 <label><input id="guide" type="checkbox" checked> Epipolar guide</label>
 </div>
+<div class="toolbar"><label>Search band ±px <input id="band" type="number" min="2" max="100" value="12"></label><button id="suggest">Suggest from rough traces</button><button id="accept-suggestion">Accept selected suggestion</button></div>
+<p class="hint">Draw one rough Image trace in each view, mask reflections, then Suggest. Select a suggestion to accept it, drag to correct it, or Delete selected to reject it. Save revision after review.</p>
 <p class="hint">Click the same physical feature in both cameras. Wheel to zoom, Shift-drag or right-drag to pan. Trace each view independently. In Select / edit, drag a point or vertex to correct it.</p>
 <div id="views">
 <figure><figcaption id="caption0">cam0</figcaption><canvas id="view0" aria-label="Camera 0 annotation view"></canvas></figure>

@@ -1,8 +1,13 @@
 # Recorded-wave inspection and manual annotation
 
-This implements the first two pipeline stages and a diagnostic point-geometry export. The source baseline is `rphysduo/programming` master commit `84869186996338c930c25d07b00d156407bd5956`.
+This implements recording inspection, manual annotations, diagnostic point geometry,
+and optional physical profiles/measurements with an explicit measured configuration.
+See [physical analysis and lab instructions](PHYSICAL_ANALYSIS.md) for the new stages.
 
-The current tools inspect saved videos, review original frames, store versioned observations, and reproduce board-coordinate XYZ for researcher-verified stereo matches. Physical wave profiles and physics features require a reviewed surface pilot, measured coordinate conventions and a still-water reference.
+The tools inspect saved videos, review original frames, store versioned observations,
+and reproduce board-coordinate XYZ for researcher-verified stereo matches. Physical
+profiles require a reviewed surface pilot, measured coordinate conventions and a
+still-water reference. Numerical tests do not establish experimental accuracy.
 
 ## Run the lab workflow
 
@@ -53,7 +58,11 @@ python camera/analyze_wave_trial.py extract \
 
 This writes `surface_observations.csv`, `breaking_events.csv`, `reconstruction.json` and `analysis_manifest.json`. The JSON contains every included annotation revision, source coordinates, timing and geometry flags. The CSV retains raw pixels, board XYZ, both original elapsed timestamps and frame indices, reviewer confidence, masks and geometry errors. Original read timestamps and camera device identities are also retained in the JSON.
 
-The current `extract` command provides point diagnostics. `measure`, automatic surface detection, `extract --config`, physical profile generation and velocity estimation belong to later checkpoints. Fields for physical height, eta and positional uncertainty remain null. Masked and geometrically invalid observations stay available for diagnostics.
+Without `--config`, `extract` provides point diagnostics and physical fields remain
+null. With a measured configuration it also creates separate `profiles.csv` and
+`profiles.json` artifacts. `measure` calculates supported physics features and
+optionally reviewed trajectories. Masked and invalid observations remain available
+for diagnosis. Automatic suggestions and prediction tools are implemented; experimental accuracy awaits validated data. See [the phases 4/5/7 guide](AUTOMATION_AND_PREDICTION.md).
 
 ## November 10 feasibility findings
 
@@ -78,10 +87,10 @@ Visual inspection of nine representative pairs shows moving disturbances and bou
 
 1. Complete the manual 5–15-frame pilot. Verify physical feature identity, cross-camera timing limitations, visible spatial coverage and reproducibility between reviewers.
 2. Establish physical up, measured board-to-tank axes, still-water elevation and the intended X slice. Validate known heights and lengths through the actual wet optical path. Then construct sparse longitudinal profiles, preserve gaps and estimate positional uncertainty.
-3. Implement slope, crest/trough height, wavelength and steepness only where profiles support them. Read the Babanin paper's exact shape definitions before implementing geometric skewness and asymmetry. Test direction reversal, noise, incomplete profiles and units.
+3. Run the implemented `measure` stage on supported profiles. The Babanin shape diagram and equations have been checked, and synthetic tests cover direction reversal, noise, incomplete profiles and units. Validate these measurements against independent lab references.
 4. Evaluate simple automatic suggestions against held-out human-reviewed frames after the pilot succeeds.
-5. Track crest and envelope observations with the original timestamps and shared-frame provenance. Report group speed only when a distinct envelope can be followed.
-6. Join validated measurements, measured experimental settings and reviewed breaking outcomes by trial and wave ID.
+5. Supply reviewed crest or packet links to `measure --tracks`. Use `track` to propose motion/shape identities or sparse packet-envelope tracks, then review them. Report group speed only when a distinct envelope can be followed.
+6. Use `dataset` to join validated measurements, measured experimental settings and reviewed breaking outcomes by trial and wave ID. Inspect its readiness report and conditional comparison plots.
 7. Compare prediction baselines using whole-trial splits when sufficient independent experimental trials exist.
 
 The visual review is provisional. Synthetic geometry tests establish numerical behavior. Experimental measurement accuracy and breaking prediction require lab validation.

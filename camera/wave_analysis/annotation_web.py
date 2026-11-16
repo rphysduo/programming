@@ -5,7 +5,7 @@ import cv2
 from flask import Flask, Response, jsonify, render_template, request
 
 from correspondence_guide import predict_correspondence
-from .annotations import AnnotationStore, RevisionConflict
+from .annotations import AnnotationStore, RevisionConflict, validate_document
 from .reports import json_text
 from .session_io import WaveSession
 from .stereo import reconstruct_document
@@ -73,5 +73,18 @@ def create_app(session_path, output_dir):
             raise ValueError('Expected source_camera and source_px')
         session.assert_calibration_current()
         return response(predict_correspondence(session.cal, data.get('source_camera'), data.get('source_px')))
+
+    @app.post('/api/suggest/<int:index>')
+    def suggest(index):
+        from .suggestions import suggest_document
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            raise ValueError('Expected document and band_px')
+        document = data.get('document')
+        validate_document(document, session)
+        session.assert_calibration_current()
+        info = session.pair_info(index)
+        images = [session.frame(c, info['cameras'][c]['frame_index']) for c in ('cam0', 'cam1')]
+        return response(suggest_document(images, document, session.cal, data.get('band_px', 12)))
 
     return app

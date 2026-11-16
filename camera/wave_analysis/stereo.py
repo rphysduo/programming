@@ -37,8 +37,11 @@ def reconstruct_document(document, session):
     return results
 
 
-def extract_annotations(session, store, output_dir):
+def extract_annotations(session, store, output_dir, config=None):
     """Export each saved pair's latest reviewed geometry to a fresh directory."""
+    if config is not None:
+        from .config import validate_config
+        config = validate_config(config, session.cal.hashes)
     output = output_path(session.path, output_dir)
     if output == store.path or store.path in output.parents or output in store.path.parents:
         raise ValueError('Choose an extraction directory separate from annotations')
@@ -83,7 +86,6 @@ def extract_annotations(session, store, output_dir):
                     source_files=session.sources, annotation_directory=str(store.path),
                     coordinate_convention='Board XYZ in mm; physical up, tank axes and eta reference unverified',
                     status='Diagnostic geometry from manual annotations; physical measurements pending validation')
-    (output/'analysis_manifest.json').write_text(json_text(manifest))
     (output/'reconstruction.json').write_text(json_text(documents))
     columns = ['pair_index','annotation_revision','point_id','label','order','status','confidence',
                'cam0_frame','cam1_frame','cam0_elapsed_ns','cam1_elapsed_ns','host_gap_ms',
@@ -97,4 +99,14 @@ def extract_annotations(session, store, output_dir):
     write_csv(output/'breaking_events.csv', events, ['pair_index','annotation_revision','wave_id','observed',
         'confidence','onset_camera','frame_index','elapsed_ns','read_timestamp_ns','position_raw_px',
         'observation_complete','criterion','notes'])
-    return dict(annotated_pairs=len(documents), observations=len(rows), output_dir=str(output))
+    profile_summary = {}
+    if config is not None:
+        from .pipeline import export_profiles, digest
+        profile_summary = export_profiles(output, documents, config, session.cal)
+        manifest['profile_inputs_sha256'] = {name:digest(output/name) for name in
+            ('profiles.json','physical_config.json','reconstruction.json','breaking_events.csv')}
+        manifest['physical_profile_status'] = 'Conditional on explicit measured configuration'
+    from .reports import code_version
+    manifest['code'] = code_version()
+    (output/'analysis_manifest.json').write_text(json_text(manifest))
+    return dict(annotated_pairs=len(documents), observations=len(rows), output_dir=str(output), **profile_summary)

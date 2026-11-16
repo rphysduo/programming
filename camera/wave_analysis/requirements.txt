@@ -1,0 +1,4 @@
+# Additional dependency for offline profile/physics plots.
+# Existing camera setup supplies NumPy, OpenCV and Flask.
+matplotlib>=3.6
+scikit-learn>=1.2

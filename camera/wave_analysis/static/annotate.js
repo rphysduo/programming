@@ -112,7 +112,7 @@ class View {
         item[`cam${this.camera}`]=point;
         if (item.status==='verified') item.status='uncertain';
       } else item.vertices_px[selected.vertex]=point;
-      if (item.origin==='machine') item.human_reviewed=false;
+      if (item.origin==='machine') {item.human_reviewed=false;item.machine_edited=true;}
       this.drag.moved=true;
       changed(); draw();
     }
@@ -220,7 +220,7 @@ function renderObjects() {
     $('label').value=item.label||'';$('confidence').value=item.confidence;$('object-notes').value=item.notes||'';
     $('status-label').hidden=selected.group!=='points';$('direction-label').hidden=selected.group!=='traces';
     $('status').value=item.status||'uncertain';$('direction').value=item.direction||'unknown';
-    $('origin').textContent=`Origin ${item.origin}. ${selected.group==='points'?'Drag either observation to correct its position. Editing a verified point returns it to uncertain.':'Select a vertex and drag to edit its position.'}`;
+    $('origin').textContent=`Origin ${item.origin}, reviewed ${item.human_reviewed===true}. ${selected.group==='points'?'Drag either observation to correct its position. Editing a verified point returns it to uncertain.':'Select a vertex and drag to edit its position.'}`;
   }
   draw();
 }
@@ -348,3 +348,27 @@ async function start() {
   } catch(error) {message(error.message);document.body.inert=false;}
 }
 start();
+
+$('suggest').onclick=async()=>{
+  if(loading || !documentData) return;
+  const index=pairIndex, before=JSON.stringify(documentData);
+  $('suggest').disabled=true; message('Finding edge candidates and patch correspondences…');
+  try {
+    const result=await api(`/api/suggest/${index}`,{document:documentData,band_px:Number($('band').value)});
+    if(pairIndex!==index || JSON.stringify(documentData)!==before) {
+      message('Annotations changed during detection. Run Suggest again.'); return;
+    }
+    documentData.traces.push(...result.traces);documentData.points.push(...result.points);
+    documentData.suggestion_diagnostics=result.diagnostics;
+    changed();renderObjects();
+    message(`${result.traces.length} candidate segments, ${result.points.length} uncertain matches. Coverage cam0/cam1: ${Math.round(result.diagnostics.cam0.coverage_fraction*100)}% / ${Math.round(result.diagnostics.cam1.coverage_fraction*100)}%. Review each suggestion; these are not measured surface points yet.`);
+  } catch(error) {message(error.message);} finally {$('suggest').disabled=false;}
+};
+$('accept-suggestion').onclick=()=>{
+  const item=currentObject();
+  if(!item || item.origin!=='machine') {message('Select a machine suggestion first.');return;}
+  item.human_reviewed=true;
+  if(selected.group==='points') item.status='verified';
+  changed();renderObjects();updateGeometry();
+  message(selected.group==='points'?'Stereo identity marked reviewed. Geometry limits still apply. Save revision.':'Trace marked reviewed. A single-view trace does not establish a stereo match. Save revision.');
+};
