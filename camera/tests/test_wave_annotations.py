@@ -105,7 +105,9 @@ def test_masked_points_still_keep_geometry_and_flags(wave_session):
 def test_real_app_routes_and_reproducible_reconstruction(wave_session,tmp_path):
     folder=tmp_path/'outputs'/'annotations'
     client=create_app(wave_session,folder).test_client()
-    assert client.get('/').status_code==200
+    page = client.get('/')
+    assert page.status_code == 200
+    assert b'<option value="point" selected>Stereo point</option>' in page.data
     assert client.get('/static/annotate.js').status_code==200
     assert client.get('/images/cam0/0').mimetype=='image/png'
     assert client.get('/images/cam2/0').status_code==400
