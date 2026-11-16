@@ -26,13 +26,14 @@
 <button id="finish">Finish trace / mask</button><button id="unmatched">Keep unmatched point</button>
 <button id="cancel">Cancel pending</button><button id="fit">Fit views</button>
 <label><input id="guide" type="checkbox" checked> Epipolar guide</label>
+<label><input id="magnify" type="checkbox" checked> Magnifier</label>
 </div>
 <div class="toolbar"><label>Search band ±px <input id="band" type="number" min="2" max="100" value="12"></label><button id="suggest">Suggest from rough traces</button><button id="accept-suggestion">Accept selected suggestion</button></div>
 <p class="hint">Draw one rough Image trace in each view, mask reflections, then Suggest. Select a suggestion to accept it, drag to correct it, or Delete selected to reject it. Save revision after review.</p>
 <p class="hint">Click the same physical feature in both cameras. Wheel to zoom, Shift-drag or right-drag to pan. Trace each view independently. In Select / edit, drag a point or vertex to correct it.</p>
 <div id="views">
-<figure><figcaption id="caption0">cam0</figcaption><canvas id="view0" aria-label="Camera 0 annotation view"></canvas></figure>
-<figure><figcaption id="caption1">cam1</figcaption><canvas id="view1" aria-label="Camera 1 annotation view"></canvas></figure>
+<figure><figcaption id="caption0">cam0</figcaption><div class="camera-panel"><canvas id="view0" class="camera-view" aria-label="Camera 0 annotation view"></canvas><canvas id="lens0" class="view-lens" aria-hidden="true" hidden></canvas></div></figure>
+<figure><figcaption id="caption1">cam1</figcaption><div class="camera-panel"><canvas id="view1" class="camera-view" aria-label="Camera 1 annotation view"></canvas><canvas id="lens1" class="view-lens" aria-hidden="true" hidden></canvas></div></figure>
 </div>
 <p id="message" role="status"></p>
 <div class="panels">
@@ -66,8 +67,8 @@
 </div>
 <section>
 <h2>Point geometry</h2>
-<p>Verified matches use the existing calibration and geometry checks. Masked observations remain flagged. Board XYZ is in millimeters. Physical up, tank axes and still-water elevation await measured verification.</p>
-<div class="table-wrap"><table><thead><tr><th>Point</th><th>Correspondence</th><th>Board X, Y, Z (mm)</th><th>Geometry valid</th><th>Reprojection 0 / 1 (px)</th><th>Epipolar (px)</th><th>Flags</th></tr></thead><tbody id="geometry"></tbody></table></div>
+<p>Two camera observations show board XYZ in millimeters when triangulation succeeds. Uncertain matches show a preview. Mark the same physical feature as verified before including it in analysis. Geometry checks and exclusion masks still apply.</p>
+<div class="table-wrap"><table><thead><tr><th>Point</th><th>Correspondence</th><th>Board X, Y, Z (mm)</th><th>Geometry checks</th><th>Reprojection 0 / 1 (px)</th><th>Epipolar (px)</th><th>Flags</th></tr></thead><tbody id="geometry"></tbody></table></div>
 </section>
 </body>
 </html>

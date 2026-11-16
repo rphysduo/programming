@@ -48,7 +48,7 @@ def create_app(session_path, output_dir):
             if not isinstance(data, dict):
                 raise ValueError('Expected a JSON annotation document')
             document = store.save(index, data, data.get('revision'))
-        return response(dict(document=document, geometry=reconstruct_document(document, session)))
+        return response(dict(document=document, geometry=reconstruct_document(document, session, include_previews=True)))
 
     @lru_cache(maxsize=8)
     def encoded_frame(camera, frame_index):
@@ -64,7 +64,7 @@ def create_app(session_path, output_dir):
 
     @app.post('/api/geometry')
     def geometry():
-        return response(reconstruct_document(request.get_json(silent=True), session))
+        return response(reconstruct_document(request.get_json(silent=True), session, include_previews=True))
 
     @app.post('/api/guide')
     def guide():

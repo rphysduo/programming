@@ -7,8 +7,11 @@ from .annotations import validate_document
 from .reports import json_text, output_path, write_csv
 
 
-def reconstruct_document(document, session):
-    """Retain raw XYZ and all original geometry flags for verified point matches.
+def reconstruct_document(document, session, *, include_previews=False):
+    """Return board XYZ and geometry flags for reviewed points.
+
+    The browser can request provisional XYZ for unreviewed two-view points.
+    The default keeps unreviewed coordinates out of the analysis export.
 
     Physical up, tank axes and still-water reference await measured configuration.
     Annotation confidence and timing remain independent of the geometry gates.
@@ -29,7 +32,8 @@ def reconstruct_document(document, session):
                     geometry=None, usable_for_profile=False, physical_height_mm=None,
                     eta_mm=None, positional_uncertainty_mm=None,
                     physical_accuracy='unvalidated', physical_frame_status='board axes only')
-        if point['status'] == 'verified':
+        has_both_views = item['cam0'] is not None and item['cam1'] is not None
+        if point['status'] == 'verified' or (include_previews and has_both_views):
             result = triangulate_point(point['cam0'], point['cam1'], session.cal)
             result['X_board_mm'] = cam0_to_board(np.asarray(result['X_cam0_mm']), session.cal).tolist()
             item['geometry'] = result

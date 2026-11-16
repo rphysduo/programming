@@ -31,6 +31,8 @@ class View {
     this.camera = camera;
     this.canvas = $(`view${camera}`);
     this.ctx = this.canvas.getContext('2d');
+    this.lens = $(`lens${camera}`);
+    this.lensContext = this.lens.getContext('2d');
     this.image = null;
     this.scale = 1;
     this.offset = [0,0];
@@ -43,11 +45,20 @@ class View {
       this.scale = Math.max(0.05, Math.min(20, this.scale * Math.exp(-event.deltaY*0.001)));
       this.offset = position.map((value, i) => value - raw[i]*this.scale);
       this.draw();
+      this.drawMagnifier(position);
     }, {passive:false});
     this.canvas.addEventListener('pointerdown', event => this.down(event));
     this.canvas.addEventListener('pointermove', event => this.move(event));
     this.canvas.addEventListener('pointerup', event => this.up(event));
-    new ResizeObserver(() => this.draw()).observe(this.canvas);
+    this.canvas.addEventListener('pointerleave', () => this.hideMagnifier());
+    this.canvas.addEventListener('pointercancel', () => {
+      this.drag = null;
+      this.hideMagnifier();
+    });
+    new ResizeObserver(() => {
+      this.hideMagnifier();
+      this.draw();
+    }).observe(this.canvas);
   }
   screen(event) {
     const bounds = this.canvas.getBoundingClientRect();
@@ -56,6 +67,7 @@ class View {
   raw(position) { return position.map((value,i) => (value-this.offset[i])/this.scale); }
   inside(point) { return this.image && point[0]>=0 && point[1]>=0 && point[0]<this.image.width && point[1]<this.image.height; }
   async load(frame) {
+    this.hideMagnifier();
     const image = new Image();
     const ready = new Promise((resolve,reject) => {image.onload=resolve; image.onerror=()=>reject(new Error('Source frame could not load'));});
     image.src = `/images/cam${this.camera}/${frame}`;
@@ -68,7 +80,60 @@ class View {
     const bounds = this.canvas.getBoundingClientRect();
     this.scale = Math.min(bounds.width/this.image.width,bounds.height/this.image.height);
     this.offset = [(bounds.width-this.image.width*this.scale)/2,(bounds.height-this.image.height*this.scale)/2];
+    this.hideMagnifier();
     this.draw();
+  }
+  hideMagnifier() { this.lens.hidden = true; }
+  drawMagnifier(position) {
+    const [x, y] = position;
+    const bounds = this.canvas.getBoundingClientRect();
+    const {width, height} = bounds;
+    const raw = this.raw(position);
+    const gap = 12;
+    const visibleTop = Math.max(0, -bounds.top);
+    const visibleBottom = Math.min(height, window.innerHeight - bounds.top);
+    const size = Math.floor(Math.min(144, width / 2 - 2 * gap, visibleBottom - visibleTop - 2 * gap));
+    if (loading || !$('magnify').checked || !this.inside(raw) || size < 32 ||
+        x < 0 || x >= width || y < 0 || y >= height) {
+      this.hideMagnifier();
+      return;
+    }
+
+    // Put the lens beside the cursor, including when it is near a view edge.
+    const left = x + gap + size <= width - gap ? x + gap : x - gap - size;
+    const preferredTop = y + gap + size <= visibleBottom - gap ? y + gap : y - gap - size;
+    const top = Math.max(visibleTop + gap, Math.min(preferredTop, visibleBottom - gap - size));
+    const pixels = Math.round(size * (window.devicePixelRatio || 1));
+    if (this.lens.width !== pixels || this.lens.height !== pixels) {
+      this.lens.width = this.lens.height = pixels;
+    }
+    this.lens.style.width = this.lens.style.height = `${size}px`;
+    this.lens.style.left = `${left}px`;
+    this.lens.style.top = `${top}px`;
+
+    const ctx = this.lensContext;
+    const pixelRatio = pixels / size;
+    const center = size / 2;
+    const zoom = Math.max(3, 2.5 * this.scale);
+    ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+    ctx.clearRect(0, 0, size, size);
+    ctx.imageSmoothingEnabled = false;
+    // Draw from the full-resolution frame and keep the raw cursor pixel at the center.
+    ctx.drawImage(this.image, center - raw[0] * zoom, center - raw[1] * zoom,
+      this.image.width * zoom, this.image.height * zoom);
+
+    ctx.beginPath();
+    ctx.moveTo(center - 11, center); ctx.lineTo(center - 3, center);
+    ctx.moveTo(center + 3, center); ctx.lineTo(center + 11, center);
+    ctx.moveTo(center, center - 11); ctx.lineTo(center, center - 3);
+    ctx.moveTo(center, center + 3); ctx.lineTo(center, center + 11);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#080d14';
+    ctx.stroke();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = '#fff';
+    ctx.stroke();
+    this.lens.hidden = false;
   }
   hit(point) {
     if (!documentData) return null;
@@ -102,12 +167,13 @@ class View {
     }
   }
   move(event) {
-    if (!this.drag) return;
     const position=this.screen(event);
-    if (this.drag.kind==='pan') {
+    if (this.drag?.kind==='pan') {
       this.offset=position.map((v,i)=>this.drag.offset[i]+v-this.drag.position[i]);
       this.draw();
-    } else if (this.drag.kind==='vertex') {
+    }
+    this.drawMagnifier(position);
+    if (this.drag?.kind==='vertex') {
       const point=this.raw(position);
       if (!this.inside(point) || Math.hypot(...position.map((v,i)=>v-this.drag.position[i]))<2) return;
       const item=currentObject();
@@ -239,9 +305,15 @@ function renderGeometry(rows) {
   const format=value=>typeof value==='number'?value.toFixed(3):'unavailable';
   rows.forEach(item=>{
     const geometry=item.geometry, row=document.createElement('tr');
-    const cells=[item.label||item.id.slice(0,8),item.status,geometry?geometry.X_board_mm.map(format).join(', '):'unavailable',
-      geometry?String(geometry.valid):'unreviewed',geometry?`${format(geometry.reproj_error_cam0_px)} / ${format(geometry.reproj_error_cam1_px)}`:'unavailable',
-      geometry?format(geometry.epipolar_sampson_px):'unavailable',
+    const hasXYZ = geometry && geometry.X_board_mm.every(Number.isFinite);
+    let xyz = geometry ? 'No finite reconstruction' : 'Needs two camera observations';
+    if (hasXYZ) {
+      xyz = geometry.X_board_mm.map(format).join(', ');
+      if (item.status !== 'verified') xyz += ' (preview)';
+    }
+    const cells=[item.label||String(item.order+1),item.status,xyz,
+      geometry?(geometry.valid?'Pass':'Fail'):'—',geometry?`${format(geometry.reproj_error_cam0_px)} / ${format(geometry.reproj_error_cam1_px)}`:'—',
+      geometry?format(geometry.epipolar_sampson_px):'—',
       [...(geometry?geometry.flags:[]),...(item.mask_ids.length?['inside exclusion mask']:[])].join(', ')];
     cells.forEach(value=>{const cell=document.createElement('td');cell.textContent=value;row.append(cell);});
     $('geometry').append(row);
@@ -286,6 +358,7 @@ $('mode').onchange=()=>{cancelDraft();message('');};
 $('guide').onchange=()=>{if(!$('guide').checked) {guide=null;guideSequence++;}draw();};
 $('cancel').onclick=cancelDraft;
 $('fit').onclick=()=>views.forEach(view=>view.fit());
+$('magnify').onchange=()=>views.forEach(view=>view.hideMagnifier());
 $('finish').onclick=()=>{
   if(!draft || !draft.vertices) return;
   const group=draft.kind==='trace'?'traces':'masks', minimum=group==='traces'?2:3;
@@ -363,7 +436,7 @@ $('suggest').onclick=async()=>{
     }
     documentData.traces.push(...result.traces);documentData.points.push(...result.points);
     documentData.suggestion_diagnostics=result.diagnostics;
-    changed();renderObjects();
+    changed();renderObjects();updateGeometry();
     message(`${result.traces.length} candidate segments, ${result.points.length} uncertain matches. Coverage cam0/cam1: ${Math.round(result.diagnostics.cam0.coverage_fraction*100)}% / ${Math.round(result.diagnostics.cam1.coverage_fraction*100)}%. Review each suggestion; these are not measured surface points yet.`);
   } catch(error) {message(error.message);} finally {$('suggest').disabled=false;}
 };

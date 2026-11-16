@@ -129,6 +129,36 @@ def test_real_app_routes_and_reproducible_reconstruction(wave_session,tmp_path):
         extract_annotations(session,AnnotationStore(session,folder),tmp_path/'outputs'/'geometry')
 
 
+def test_unreviewed_matches_preview_xyz_and_keep_original_review_status(wave_session, tmp_path):
+    folder = tmp_path / 'outputs' / 'annotations'
+    client = create_app(wave_session, folder).test_client()
+    data = client.get('/api/pairs/0').get_json()['document']
+    good = point('uncertain')
+    bad = dict(good, id='bad_match', cam1=[30.2, 38.])
+    unmatched = dict(good, id='only_cam0', status='unmatched', cam1=None)
+    data['points'] = [good, bad, unmatched]
+
+    live = client.post('/api/geometry', json=data).get_json()
+    assert live[0]['status'] == 'uncertain'
+    assert live[0]['geometry']['valid']
+    assert live[0]['geometry']['X_board_mm'] == pytest.approx([0, 0, 0], abs=1e-8)
+    assert not live[1]['geometry']['valid']
+    assert 'high_epipolar' in live[1]['geometry']['flags']
+    assert live[2]['geometry'] is None
+
+    assert client.post('/api/pairs/0', json=data).get_json()['geometry'] == live
+    reopened = client.get('/api/pairs/0').get_json()
+    assert reopened['geometry'] == live
+    assert reopened['document']['points'] == data['points']
+
+    # Preview calculations belong to the editor. Export still requires review.
+    session = WaveSession(wave_session)
+    output = tmp_path / 'outputs' / 'geometry'
+    extract_annotations(session, AnnotationStore(session, folder), output)
+    records = json.loads((output / 'reconstruction.json').read_text())
+    assert all(p['geometry'] is None for p in records[0]['reconstructed'])
+
+
 def test_calibration_change_during_annotation_rejected(wave_session,tmp_path):
     client=create_app(wave_session,tmp_path/'outputs'/'annotations').test_client()
     path=wave_session/'calibration/stereo_params.npz'
