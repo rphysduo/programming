@@ -4,8 +4,8 @@ serial_connection = serial.Serial('/dev/ttyACM0', 115200)
 time.sleep(2)
 
 
-amp = 30
-freq = 0.7 #hz
+amp = 40
+freq = 0.5 #hz
 
 
 while True:
